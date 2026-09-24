@@ -56,10 +56,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.clear_session(user.id)
-    # نظف الـ browser
-    task = context.bot_data.pop(f"keepalive_{user.id}", None)
-    if task:
-        task.cancel()
     b = context.bot_data.pop(f"browser_{user.id}", None)
     context.bot_data.pop(f"page_{user.id}", None)
     context.bot_data.pop(f"ctx_{user.id}", None)
@@ -79,21 +75,6 @@ async def send_photo(msg, filepath, caption=""):
             await msg.reply_photo(photo=InputFile(f), caption=caption[:1000])
     except Exception as e:
         log.error(f"فشل إرسال الصورة: {e}")
-
-
-async def keep_page_alive(page, user_id, context):
-    """يبقي الـ page نشيط باش ما يطيحش"""
-    try:
-        while True:
-            await asyncio.sleep(15)
-            try:
-                await page.evaluate("() => Date.now()")
-                log.debug(f"💓 Keep-alive: {user_id}")
-            except Exception as e:
-                log.warning(f"⚠️ Keep-alive فشل: {e}")
-                break
-    except asyncio.CancelledError:
-        pass
 
 
 # ==================== استقبال SSO ====================
@@ -120,10 +101,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     job_id = await db.add_job(user.id, sso_url)
     await db.set_session(
-        user_id=user.id,
-        job_id=job_id,
-        sso_url=sso_url,
-        state="opening_sso"
+        user_id=user.id, job_id=job_id, sso_url=sso_url, state="opening_sso"
     )
 
     msg = await update.message.reply_text(
@@ -133,20 +111,20 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
 
 
-# ==================== Step 1: فتح SSO ====================
+# ==================== Step 1 ====================
 
 async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
         try:
             await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح المخفي...",
+                f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...",
                 parse_mode=ParseMode.MARKDOWN,
             )
             ctx = await browser.start()
 
             await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 فتح رابط SSO...",
+                f"🚀 *#{job_id}*\n\n🔹 فتح SSO...",
                 parse_mode=ParseMode.MARKDOWN,
             )
             ql = QwikLabsSession(ctx)
@@ -158,14 +136,9 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             )
             email, password = await ql.extract_credentials(page)
 
-            # حفظ الـ browser و page
             context.bot_data[f"page_{user_id}"] = page
             context.bot_data[f"browser_{user_id}"] = browser
             context.bot_data[f"ctx_{user_id}"] = ctx
-
-            # ✅ بدء keep-alive
-            ka_task = asyncio.create_task(keep_page_alive(page, user_id, context))
-            context.bot_data[f"keepalive_{user_id}"] = ka_task
 
             await db.set_session(
                 user_id=user_id,
@@ -175,7 +148,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             )
 
             if password:
-                # ✅ عندنا password → نسألو على اسم الحاوية
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n"
@@ -187,9 +159,9 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             else:
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
-                    f"👤 *email:* `{email}`\n\n"
+                    f"👤 `{email}`\n\n"
                     f"🔑 *الرابط ما فيهش كلمة السر*\n"
-                    f"أرسل كلمة السر الآن:",
+                    f"أرسل كلمة السر:",
                     parse_mode=ParseMode.MARKDOWN,
                 )
 
@@ -223,9 +195,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     await db.set_session(
-        user_id=user.id,
-        password=text,
-        state="choosing_image"
+        user_id=user.id, password=text, state="choosing_image"
     )
 
     await update.message.reply_text(
@@ -246,21 +216,16 @@ async def handle_image_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session or session.get("state") != "choosing_image":
         return
 
-    # تحقق من الصيغة
     if not text.startswith("docker.io/") and "/" not in text:
         await update.message.reply_text(
-            "⚠️ صيغة غير صالحة.\n"
-            "مثال: `docker.io/ajndjd2/ahmed-vip1`",
+            "⚠️ صيغة غير صالحة.\nمثال: `docker.io/ajndjd2/ahmed-vip1`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
-    # استخراج اسم الـ Service (آخر جزء)
     service_name = text.split("/")[-1].split(":")[0].lower()
-    # تنظيف: حروف صغيرة وأرقام وشرطات فقط
     service_name = re.sub(r'[^a-z0-9\-]', '-', service_name)
     service_name = re.sub(r'-+', '-', service_name).strip('-')
-    # خاص يبدا بحرف
     if not service_name or not service_name[0].isalpha():
         service_name = f"svc-{service_name}"
 
@@ -275,7 +240,7 @@ async def handle_image_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *تم استخراج المعلومات:*\n\n"
         f"🐳 Image: `{text}`\n"
         f"📦 Service: `{service_name}`\n\n"
-        f"🌍 *اختر المنطقة (Region):*",
+        f"🌍 *اختر المنطقة:*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=region_menu(),
     )
@@ -338,7 +303,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌍 Region: `{session['region']}`\n"
             f"💾 RAM: `{session['memory']}`\n"
             f"⚙️ CPU: `{session['cpu']}`\n\n"
-            f"❓ *تأكيد النشر؟*"
+            f"❓ *تأكيد؟*"
         )
         await query.message.edit_text(
             summary, parse_mode=ParseMode.MARKDOWN, reply_markup=confirm_menu()
@@ -351,9 +316,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if choice == "no":
             await db.clear_session(user.id)
-            task = context.bot_data.pop(f"keepalive_{user.id}", None)
-            if task:
-                task.cancel()
             b = context.bot_data.pop(f"browser_{user.id}", None)
             context.bot_data.pop(f"page_{user.id}", None)
             context.bot_data.pop(f"ctx_{user.id}", None)
@@ -381,13 +343,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ==================== Step 2: النشر ====================
+# ==================== Step 2 ====================
 
 async def run_step2_login(job_id, username, password, msg, user_id, context):
     async with job_lock:
         try:
             page = context.bot_data.get(f"page_{user_id}")
-            browser = context.bot_data.get(f"browser_{user_id}")
             if not page:
                 raise RuntimeError("الجلسة انتهت. أرسل SSO من جديد.")
 
@@ -454,77 +415,3 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 f"🌍 `{region}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
-
-        except Exception as e:
-            log.exception("فشل النشر")
-            await db.update_job(job_id, "failed", str(e))
-            await db.clear_session(user_id)
-            await msg.edit_text(
-                messages.FAILED.format(error=str(e)[:300]),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        finally:
-            # إلغاء keep-alive
-            task = context.bot_data.pop(f"keepalive_{user_id}", None)
-            if task:
-                task.cancel()
-            try:
-                pg = context.bot_data.pop(f"page_{user_id}", None)
-                if pg:
-                    try:
-                        await pg.close()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            b = context.bot_data.pop(f"browser_{user_id}", None)
-            context.bot_data.pop(f"ctx_{user_id}", None)
-            if b:
-                try:
-                    await b.close()
-                except Exception:
-                    pass
-
-
-# ==================== استخراج project_id ====================
-
-async def get_project_id(page, username: str = None) -> str:
-    url = page.url
-    m = re.search(r'project=([a-z0-9\-]+)', url)
-    if m:
-        return m.group(1)
-
-    try:
-        pid = await page.evaluate("""
-            async () => {
-                try {
-                    const res = await fetch(
-                        'https://cloudresourcemanager.googleapis.com/v1/projects',
-                        { credentials: 'include' }
-                    );
-                    const data = await res.json();
-                    if (data.projects && data.projects.length > 0) {
-                        return data.projects[0].projectId;
-                    }
-                } catch(e) {}
-                return null;
-            }
-        """)
-        if pid:
-            return pid
-    except Exception:
-        pass
-
-    try:
-        await page.goto(
-            "https://console.cloud.google.com/home/dashboard",
-            wait_until="domcontentloaded",
-        )
-        await asyncio.sleep(4)
-        m = re.search(r'project=([a-z0-9\-]+)', page.url)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-
-    return None
