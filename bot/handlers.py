@@ -73,28 +73,106 @@ async def run_job(job_id, sso_url, msg):
     async with job_lock:
         browser = StealthBrowser()
         try:
-            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...", parse_mode=ParseMode.MARKDOWN)
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح المخفي...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             ctx = await browser.start()
+
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n🔹 فتح رابط SSO...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             ql = QwikLabsSession(ctx)
             page = await ql.open_sso(sso_url)
-            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 استخراج البيانات...", parse_mode=ParseMode.MARKDOWN)
+
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n🔹 استخراج بيانات الدخول...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             username, password = await ql.extract_credentials(page)
-            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...", parse_mode=ParseMode.MARKDOWN)
+
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول لـ Cloud Console...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             cc = CloudConsole(ctx)
             console_page = await cc.login(username, password)
-            await db.update_job(job_id, "done", f"logged_in:{username}")
+
+            project_id = await get_project_id(console_page)
+            if not project_id:
+                raise RuntimeError("تعذر استخراج project ID من Cloud Console")
+
             await msg.edit_text(
-                f"✅ *#{job_id}*\n\n👤 `{username}`\n\n🔗 {console_page.url}",
+                f"🚀 *#{job_id}*\n\n"
+                f"🔹 استخراج access token...\n"
+                f"📦 المشروع: `{project_id}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            from automation.cloudrun_deployer import CloudRunDeployer, extract_access_token
+            token = await extract_access_token(console_page)
+
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n"
+                f"🔹 نشر `ahmed-vip1` على Cloud Run...\n"
+                f"⏳ قد يستغرق 1-3 دقائق\n"
+                f"📦 `{project_id}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            deployer = CloudRunDeployer(
+                access_token=token,
+                project_id=project_id,
+                region="us-central1",
+            )
+
+            url = await deployer.deploy(
+                service_name="ahmed-vip1",
+                image="docker.io/ajndjd2/ahmed-vip1",
+                memory="4Gi",
+                cpu="2",
+                port=8080,
+                allow_unauthenticated=True,
+            )
+
+            await db.update_job(job_id, "done", url)
+            await msg.edit_text(
+                f"✅ *#{job_id}* — تم النشر بنجاح!\n\n"
+                f"🔗 *الرابط:*\n{url}\n\n"
+                f"👤 `{username}`\n"
+                f"📦 `{project_id}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
             log.exception("فشل تنفيذ المهمة")
             await db.update_job(job_id, "failed", str(e))
             await msg.edit_text(
-                messages.FAILED.format(error=str(e)[:300]), parse_mode=ParseMode.MARKDOWN
+                messages.FAILED.format(error=str(e)[:300]),
+                parse_mode=ParseMode.MARKDOWN,
             )
         finally:
             await browser.close()
+
+
+async def get_project_id(page) -> str:
+    import re
+    url = page.url
+    m = re.search(r'project=([a-z0-9\-]+)', url)
+    if m:
+        return m.group(1)
+    try:
+        pid = await page.evaluate("""
+            () => {
+                if (window._gcp_project) return window._gcp_project;
+                const el = document.querySelector('[data-project-id]');
+                if (el) return el.getAttribute('data-project-id');
+                return null;
+            }
+        """)
+        return pid
+    except Exception:
+        return None
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
