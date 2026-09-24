@@ -84,19 +84,17 @@ async def register_user(user_id: int, username: str):
 
 # ===== Sessions =====
 
-async def set_session(user_id: int, job_id: int, sso_url: str = None,
+async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
                       username: str = None, password: str = None,
                       image: str = None, service_name: str = None,
                       region: str = None, memory: str = None,
                       cpu: str = None, state: str = None):
     """يحفظ/يحدث الجلسة"""
     async with aiosqlite.connect(config.DB_PATH) as db:
-        # نتحقق واش الجلسة موجودة
         cur = await db.execute("SELECT user_id FROM sessions WHERE user_id=?", (user_id,))
         exists = await cur.fetchone()
 
         if exists:
-            # نحدث غير الحقول اللي ماشي None
             updates = []
             params = []
             for field, val in [
