@@ -34,7 +34,7 @@ class CloudConsole:
 
                 if await self._has_verify_required(page):
                     await take_screenshot(page, f"cc_verify_{attempt}")
-                    raise RuntimeError("❌ Google كتطلب verify. سجل يدوياً أول مرة.")
+                    raise RuntimeError("❌ Google كتطلب verify.")
 
                 if await self._is_signin_page(page):
                     log.info(f"صفحة Sign in (محاولة {attempt + 1})")
@@ -129,6 +129,36 @@ class CloudConsole:
         return False
 
     async def _do_signin(self, page, username: str, password: str):
+        # ========== 📸 Screenshot قبل email ==========
+        await take_screenshot(page, "cc_before_email")
+        log.info(f"URL قبل email: {page.url}")
+
+        # 🔍 نسجل كل الحقول الموجودة
+        try:
+            inputs_info = await page.evaluate("""
+                () => {
+                    const inputs = document.querySelectorAll('input');
+                    return Array.from(inputs).map(i => ({
+                        type: i.type,
+                        name: i.name,
+                        id: i.id,
+                        visible: i.offsetParent !== null,
+                        ariaLabel: i.getAttribute('aria-label'),
+                    }));
+                }
+            """)
+            log.info(f"🔍 الحقول الموجودة: {inputs_info}")
+        except Exception as e:
+            log.warning(f"فشل قراءة الحقول: {e}")
+
+        # 🔍 نسجل نص الصفحة
+        try:
+            body_text = await page.inner_text("body")
+            body_text = body_text[:400].replace('\n', ' | ')
+            log.info(f"📄 نص الصفحة: {body_text[:300]}")
+        except Exception:
+            pass
+
         # ========== Email ==========
         email_filled = False
         email_selectors = [
@@ -137,6 +167,7 @@ class CloudConsole:
             'input[name="identifier"]',
             'input[autocomplete="username"]',
             'input[aria-label*="mail" i]',
+            'input[aria-label*="Email" i]',
             'input[jsname="YPqjbf"]',
             'input[type="text"]',
         ]
@@ -197,15 +228,38 @@ class CloudConsole:
                 log.warning(f"فشل {sel}: {e}")
                 continue
 
+        # ========== 📸 Screenshot بعد محاولة email ==========
+        await take_screenshot(page, "cc_after_email_attempt")
+
         if not email_filled:
-            await take_screenshot(page, "cc_email_not_filled")
-            raise RuntimeError("ما قدرتش نكتب الإيميل")
+            # 🔍 نص + HTML
+            try:
+                body_text = await page.inner_text("body")
+                body_text = body_text[:500].replace('\n', ' | ')
+            except Exception:
+                body_text = "ما قدرتش نقرا"
+
+            try:
+                html = await page.content()
+                with open("/app/data/screenshots/cc_no_email.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+            except Exception:
+                pass
+
+            raise RuntimeError(
+                f"❌ ما قدرتش نكتب الإيميل\n\n"
+                f"🔗 URL:\n{page.url[:200]}\n\n"
+                f"📄 النص:\n{body_text[:250]}"
+            )
 
         await human_delay(0.5, 1.2)
         await self._click_next(page, "email")
         await human_delay(3, 5)
 
-        # ========== CAPTCHA Detection ==========
+        # ========== 📸 Screenshot بعد Next ==========
+        await take_screenshot(page, "cc_after_email_next")
+
+        # ========== CAPTCHA ==========
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             from config import config
@@ -222,34 +276,30 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"فشل حل CAPTCHA: {e}")
 
-        # ========== 🔍 تحقق من الصفحة قبل password ==========
+        # ========== 📸 قبل password ==========
         await human_delay(2, 4)
         await take_screenshot(page, "cc_before_pwd")
         log.info(f"URL قبل password: {page.url}")
 
-        # 🔍 نجيب النص الظاهر
-        try:
-            body_text = await page.inner_text("body")
-            body_text = body_text[:600].replace('\n', ' | ')
-            log.info(f"📄 نص الصفحة: {body_text[:300]}")
-        except Exception:
-            pass
-
-        # 🔍 نشوف واش كاين حقول
         try:
             inputs_info = await page.evaluate("""
                 () => {
                     const inputs = document.querySelectorAll('input');
                     return Array.from(inputs).map(i => ({
-                        type: i.type,
-                        name: i.name,
-                        id: i.id,
+                        type: i.type, name: i.name, id: i.id,
                         visible: i.offsetParent !== null,
                         ariaLabel: i.getAttribute('aria-label'),
                     }));
                 }
             """)
-            log.info(f"🔍 الحقول الموجودة: {inputs_info}")
+            log.info(f"🔍 الحقول قبل password: {inputs_info}")
+        except Exception:
+            pass
+
+        try:
+            body_text = await page.inner_text("body")
+            body_text = body_text[:400].replace('\n', ' | ')
+            log.info(f"📄 نص قبل password: {body_text[:250]}")
         except Exception:
             pass
 
@@ -315,27 +365,25 @@ class CloudConsole:
                 log.warning(f"فشل pwd {sel}: {e}")
                 continue
 
-        if not password_filled:
-            # 📸 Screenshot للفشل
-            await take_screenshot(page, "cc_pwd_not_filled")
+        # ========== 📸 Screenshot بعد password ==========
+        await take_screenshot(page, "cc_after_pwd_attempt")
 
-            # 📄 نحفظ HTML
+        if not password_filled:
+            try:
+                body_text = await page.inner_text("body")
+                body_text = body_text[:500].replace('\n', ' | ')
+            except Exception:
+                body_text = "ما قدرتش نقرا"
+
             try:
                 html = await page.content()
-                with open("/app/data/screenshots/cc_pwd_fail.html", "w", encoding="utf-8") as f:
+                with open("/app/data/screenshots/cc_no_pwd.html", "w", encoding="utf-8") as f:
                     f.write(html)
             except Exception:
                 pass
 
-            # 📄 نجيب النص
-            try:
-                body_text = await page.inner_text("body")
-                body_text = body_text[:400].replace('\n', ' | ')
-            except Exception:
-                body_text = "ما قدرتش نقرا النص"
-
             raise RuntimeError(
-                f"ما قدرتش نكتب كلمة السر\n\n"
+                f"❌ ما قدرتش نكتب كلمة السر\n\n"
                 f"🔗 URL:\n{page.url[:200]}\n\n"
                 f"📄 النص:\n{body_text[:250]}"
             )
@@ -343,6 +391,10 @@ class CloudConsole:
         await human_delay(0.5, 1.2)
         await self._click_next(page, "password")
         await human_delay(4, 7)
+
+        # ========== 📸 بعد password Next ==========
+        await take_screenshot(page, "cc_after_pwd_next")
+
         log.info("✅ تم إدخال email + password")
 
     async def _click_next(self, page, step: str):
