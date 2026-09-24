@@ -38,7 +38,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
     for jid, status, created in jobs:
         emoji = {"pending": "⏳", "done": "✅", "failed": "❌",
-                 "waiting_password": "🔑", "waiting_sso": "🌐"}.get(status, "❔")
+                 "waiting_password": "🔑"}.get(status, "❔")
         lines.append(messages.JOB_LINE.format(
             id=jid, status_emoji=emoji, status=status, date=created
         ))
@@ -64,7 +64,6 @@ async def send_photo(msg, filepath, caption=""):
         log.error(f"فشل إرسال الصورة: {e}")
 
 
-# ====== نقطة الدخول: SSO ======
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     urls = extract_urls(text)
@@ -77,7 +76,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ الرابط لا يبدو من Google Skills.")
         return
 
-    # إذا كان المستخدم عنده جلسة سابقة
     existing = await db.get_session(user.id)
     if existing:
         await update.message.reply_text(
@@ -94,11 +92,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔹 جاري فتح SSO...",
         parse_mode=ParseMode.MARKDOWN,
     )
-    asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id))
+    # ✅ مرر context
+    asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
 
 
-# ====== الخطوة 1: فتح SSO واستخراج username ======
-async def run_step1_open_sso(job_id, sso_url, msg, user_id):
+async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
+    # ✅ context الآن parameter
     async with job_lock:
         browser = StealthBrowser()
         try:
@@ -126,20 +125,17 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id):
 
             username = await ql.extract_credentials(page)
 
-            # 📸 Screenshot
             shot = await take_screenshot(page, "02_username")
             if shot:
                 await send_photo(msg, shot, f"📸 2. username: `{username}`")
 
-            # ✅ احفظ الـ page باش نستعملوها فـ الخطوة 2
-            # (نخليو المتصفح مفتوح)
+            # حفظ الجلسة فـ bot_data
             context.bot_data[f"page_{user_id}"] = page
             context.bot_data[f"browser_{user_id}"] = browser
             context.bot_data[f"ctx_{user_id}"] = ctx
 
             await db.set_session(user_id, job_id, sso_url, username, "waiting_password")
 
-            # ⚠️ اطلب password
             await msg.edit_text(
                 f"✅ *#{job_id}*\n\n"
                 f"👤 *username:* `{username}`\n\n"
@@ -162,18 +158,16 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id):
                 pass
 
 
-# ====== الخطوة 2: استقبال password والمتابعة ======
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     password = (update.message.text or "").strip()
 
     session = await db.get_session(user.id)
     if not session or session[3] != "waiting_password":
-        return  # ما كاينش جلسة، نتجاهلو
+        return
 
     job_id, sso_url, username, _ = session
 
-    # احذف الرسالة اللي فيها الباسورد للأمان
     try:
         await update.message.delete()
     except Exception:
@@ -189,7 +183,6 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ))
 
 
-# ====== الخطوة 2 الفعلية: تسجيل الدخول + النشر ======
 async def run_step2_login(job_id, username, password, msg, user_id, context):
     async with job_lock:
         try:
@@ -210,7 +203,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if shot:
                 await send_photo(msg, shot, "📸 3. بعد تسجيل الدخول")
 
-            # Project ID
             project_id = await get_project_id(console_page)
             if not project_id:
                 shot = await take_screenshot(console_page, "04_no_project")
@@ -238,7 +230,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if shot:
                 await send_photo(msg, shot, "📸 4. تم استخراج التوكن")
 
-            # النشر
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n"
                 f"🔹 نشر `ahmed-vip1`...\n"
@@ -260,7 +251,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 allow_unauthenticated=True,
             )
 
-            # Screenshot النهائي
             try:
                 await console_page.goto(
                     f"https://console.cloud.google.com/run/detail/"
@@ -294,7 +284,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
         finally:
-            # نظف الـ browser
             browser = context.bot_data.pop(f"browser_{user_id}", None)
             context.bot_data.pop(f"page_{user_id}", None)
             context.bot_data.pop(f"ctx_{user_id}", None)
