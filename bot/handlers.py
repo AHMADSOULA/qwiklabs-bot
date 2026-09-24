@@ -415,3 +415,73 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 f"🌍 `{region}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
+
+        except Exception as e:
+            log.exception("فشل النشر")
+            await db.update_job(job_id, "failed", str(e))
+            await db.clear_session(user_id)
+            await msg.edit_text(
+                messages.FAILED.format(error=str(e)[:300]),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        finally:
+            try:
+                pg = context.bot_data.pop(f"page_{user_id}", None)
+                if pg:
+                    try:
+                        await pg.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            b = context.bot_data.pop(f"browser_{user_id}", None)
+            context.bot_data.pop(f"ctx_{user_id}", None)
+            if b:
+                try:
+                    await b.close()
+                except Exception:
+                    pass
+
+
+# ==================== project_id ====================
+
+async def get_project_id(page, username: str = None) -> str:
+    url = page.url
+    m = re.search(r'project=([a-z0-9\-]+)', url)
+    if m:
+        return m.group(1)
+
+    try:
+        pid = await page.evaluate("""
+            async () => {
+                try {
+                    const res = await fetch(
+                        'https://cloudresourcemanager.googleapis.com/v1/projects',
+                        { credentials: 'include' }
+                    );
+                    const data = await res.json();
+                    if (data.projects && data.projects.length > 0) {
+                        return data.projects[0].projectId;
+                    }
+                } catch(e) {}
+                return null;
+            }
+        """)
+        if pid:
+            return pid
+    except Exception:
+        pass
+
+    try:
+        await page.goto(
+            "https://console.cloud.google.com/home/dashboard",
+            wait_until="domcontentloaded",
+        )
+        await asyncio.sleep(4)
+        m = re.search(r'project=([a-z0-9\-]+)', page.url)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+
+    return None
