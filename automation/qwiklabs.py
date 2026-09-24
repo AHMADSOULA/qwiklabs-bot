@@ -60,7 +60,7 @@ class QwikLabsSession:
             if m:
                 email = m.group(1)
 
-        # 4. password من الصفحة (إذا كانت معروضة)
+        # 4. password من selectors
         for sel in [
             '[data-test-id="student-password"]',
             '[data-test-id="password"]',
@@ -83,7 +83,7 @@ class QwikLabsSession:
                 password = m.group(1)
                 log.info(f"✅ password من URL")
 
-        # 6. password من HTML
+        # 6. password من HTML (JSON)
         if not password:
             content = await page.content()
             m = re.search(r'"password"\s*:\s*"([^"]+)"', content)
@@ -97,5 +97,5 @@ class QwikLabsSession:
             raise RuntimeError("فشل استخراج email")
 
         log.info(f"✅ email: {email}")
-        log.info(f"✅ password: {'✅' if password else '❌ ماكانش'}")
+        log.info(f"✅ password: {'✅ موجود' if password else '❌ ماكانش'}")
         return email, password
