@@ -26,6 +26,17 @@ async def init_db():
                 jobs_count INTEGER DEFAULT 0
             )
         """)
+        # جدول الجلسات: كيتخزن فيه الحالة المؤقتة
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                user_id INTEGER PRIMARY KEY,
+                job_id INTEGER,
+                sso_url TEXT,
+                username TEXT,
+                state TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
 
@@ -63,4 +74,35 @@ async def register_user(user_id: int, username: str):
             "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
             (user_id, username)
         )
+        await db.commit()
+
+
+# ==== Sessions ====
+
+async def set_session(user_id: int, job_id: int, sso_url: str, username: str, state: str):
+    """يحفظ جلسة مؤقتة للمستخدم."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO sessions 
+               (user_id, job_id, sso_url, username, state, updated_at) 
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (user_id, job_id, sso_url, username, state)
+        )
+        await db.commit()
+
+
+async def get_session(user_id: int):
+    """يرجع الجلسة الحالية للمستخدم."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT job_id, sso_url, username, state FROM sessions WHERE user_id=?",
+            (user_id,)
+        )
+        return await cur.fetchone()
+
+
+async def clear_session(user_id: int):
+    """يحذف الجلسة."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
         await db.commit()
