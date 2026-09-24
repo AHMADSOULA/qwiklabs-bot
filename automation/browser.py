@@ -29,8 +29,12 @@ class StealthBrowser:
         else:
             log.info("🆕 Chrome Profile جديد — أول مرة")
 
-        args = [
+                args = [
             "--disable-blink-features=AutomationControlled",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=CalculateNativeWinOcclusion",
             "--disable-features=IsolateOrigins,site-per-process",
             "--no-sandbox",
             "--disable-dev-shm-usage",
