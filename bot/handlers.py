@@ -190,6 +190,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if not page:
                 raise RuntimeError("الجلسة انتهت. أرسل SSO من جديد.")
 
+            # ====== تسجيل الدخول ======
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول لـ Cloud Console...",
                 parse_mode=ParseMode.MARKDOWN,
@@ -201,9 +202,32 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if shot:
                 await send_photo(msg, shot, "📸 3. بعد تسجيل الدخول")
 
-            # ✅ نستنى شوية باش الصفحة تكمل التحميل
-            await asyncio.sleep(5)
+            # ✅ إعادة محاولة إذا رجع لـ Sign in
+            await asyncio.sleep(3)
+            if "accounts.google.com" in console_page.url or "signin" in console_page.url.lower():
+                log.warning("رجع لـ Sign in — إعادة محاولة...")
+                await msg.edit_text(
+                    f"🔄 *#{job_id}*\n\n"
+                    f"🔹 Google رجع لـ Sign in — إعادة محاولة...",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                await cc._do_signin(console_page, username, password)
+                await asyncio.sleep(5)
+                await cc._handle_welcome_page(console_page)
+                await asyncio.sleep(3)
 
+                if "accounts.google.com" in console_page.url:
+                    await cc._do_signin(console_page, username, password)
+                    await asyncio.sleep(5)
+                    await cc._handle_welcome_page(console_page)
+                    await asyncio.sleep(3)
+
+                shot = await take_screenshot(console_page, "03b_retry_login")
+                if shot:
+                    await send_photo(msg, shot, "📸 3b. بعد إعادة المحاولة")
+
+            # ====== project_id ======
+            await asyncio.sleep(5)
             project_id = await get_project_id(console_page, username)
             if not project_id:
                 shot = await take_screenshot(console_page, "04_no_project")
@@ -223,6 +247,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
 
+            # ====== access token ======
             from automation.cloudrun_deployer import CloudRunDeployer, extract_access_token
             try:
                 token = await extract_access_token(console_page)
@@ -236,6 +261,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if shot:
                 await send_photo(msg, shot, "📸 4. تم استخراج التوكن")
 
+            # ====== النشر على Cloud Run ======
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n"
                 f"🔹 نشر `ahmed-vip1`...\n"
@@ -257,6 +283,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 allow_unauthenticated=True,
             )
 
+            # ====== Screenshot النهائي ======
             try:
                 await console_page.goto(
                     f"https://console.cloud.google.com/run/detail/"
