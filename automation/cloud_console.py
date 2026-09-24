@@ -28,35 +28,23 @@ class CloudConsole:
                 log.info(f"--- محاولة {attempt + 1} ---")
                 await self._wait_for_login_or_console(page)
 
-                # 🔍 فحص: كلمة سر غلط؟
                 if await self._has_wrong_password_error(page):
-                    log.warning("⚠️ كلمة السر غلط!")
                     await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
-                    raise RuntimeError(
-                        "❌ كلمة السر غير صحيحة.\nجدد الرابط من Skills."
-                    )
+                    raise RuntimeError("❌ كلمة السر غير صحيحة. جدد الرابط.")
 
-                # 🔍 فحص: verify phone?
                 if await self._has_verify_required(page):
-                    log.warning("⚠️ Google كتطلب verify phone/email")
                     await take_screenshot(page, f"cc_verify_{attempt}")
-                    raise RuntimeError(
-                        "❌ Google كتطلب التحقق من الهاتف.\n"
-                        "سجل يدوياً أول مرة."
-                    )
+                    raise RuntimeError("❌ Google كتطلب verify. سجل يدوياً أول مرة.")
 
-                # 1. إذا كانت Sign in → سجل
                 if await self._is_signin_page(page):
                     log.info(f"صفحة Sign in (محاولة {attempt + 1})")
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 7)
                     await take_screenshot(page, f"cc_after_signin_{attempt}")
 
-                # 2. Welcome
                 await self._handle_welcome_page(page)
                 await human_delay(4, 6)
 
-                # 3. Console?
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
                     break
@@ -72,15 +60,10 @@ class CloudConsole:
             await take_screenshot(page, "cc_error")
             raise
 
-    # ==========================================
-    # 🔍 دوال الفحص
-    # ==========================================
-
     async def _has_wrong_password_error(self, page) -> bool:
         try:
             content = (await page.content()).lower()
-            for txt in ['incorrect password', 'wrong password',
-                        'كلمة السر غير صحيحة']:
+            for txt in ['incorrect password', 'wrong password', 'كلمة السر غير صحيحة']:
                 if txt in content:
                     return True
         except Exception:
@@ -145,10 +128,6 @@ class CloudConsole:
                 pass
         return False
 
-    # ==========================================
-    # 🔐 تسجيل الدخول
-    # ==========================================
-
     async def _do_signin(self, page, username: str, password: str):
         # ========== Email ==========
         email_filled = False
@@ -179,25 +158,19 @@ class CloudConsole:
 
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ طريقة 1 نجحت")
                     email_filled = True
                     break
 
-                # طريقة 2: type
-                log.warning("fill ما خدمش — نجرب type")
+                log.warning("fill ما خدمش — type")
                 await el.click()
-                await human_delay(0.3, 0.5)
                 await page.keyboard.type(username, delay=50)
                 await human_delay(0.3, 0.8)
-
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ طريقة 2 نجحت")
                     email_filled = True
                     break
 
-                # طريقة 3: JS
-                log.warning("type ما خدمش — نجرب JS")
+                log.warning("type ما خدمش — JS")
                 await page.evaluate(
                     """(args) => {
                         const inputs = document.querySelectorAll('input');
@@ -216,27 +189,23 @@ class CloudConsole:
                     {"val": username}
                 )
                 await human_delay(0.5, 1.0)
-
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ طريقة 3 نجحت")
                     email_filled = True
                     break
-
             except Exception as e:
-                log.warning(f"فشل مع {sel}: {e}")
+                log.warning(f"فشل {sel}: {e}")
                 continue
 
         if not email_filled:
             await take_screenshot(page, "cc_email_not_filled")
             raise RuntimeError("ما قدرتش نكتب الإيميل")
 
-        # ===== Next =====
         await human_delay(0.5, 1.2)
         await self._click_next(page, "email")
         await human_delay(3, 5)
 
-        # ========== 🔍 CAPTCHA Detection ==========
+        # ========== CAPTCHA Detection ==========
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             from config import config
@@ -253,12 +222,45 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"فشل حل CAPTCHA: {e}")
 
+        # ========== 🔍 تحقق من الصفحة قبل password ==========
+        await human_delay(2, 4)
+        await take_screenshot(page, "cc_before_pwd")
+        log.info(f"URL قبل password: {page.url}")
+
+        # 🔍 نجيب النص الظاهر
+        try:
+            body_text = await page.inner_text("body")
+            body_text = body_text[:600].replace('\n', ' | ')
+            log.info(f"📄 نص الصفحة: {body_text[:300]}")
+        except Exception:
+            pass
+
+        # 🔍 نشوف واش كاين حقول
+        try:
+            inputs_info = await page.evaluate("""
+                () => {
+                    const inputs = document.querySelectorAll('input');
+                    return Array.from(inputs).map(i => ({
+                        type: i.type,
+                        name: i.name,
+                        id: i.id,
+                        visible: i.offsetParent !== null,
+                        ariaLabel: i.getAttribute('aria-label'),
+                    }));
+                }
+            """)
+            log.info(f"🔍 الحقول الموجودة: {inputs_info}")
+        except Exception:
+            pass
+
         # ========== Password ==========
         password_filled = False
         password_selectors = [
             'input[type="password"]',
             'input[name="password"]',
             'input[autocomplete="current-password"]',
+            'input[aria-label*="password" i]',
+            'input[jsname="YPqjbf"][type="password"]',
         ]
 
         for sel in password_selectors:
@@ -278,22 +280,19 @@ class CloudConsole:
 
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ كلمة السر (طريقة 1)")
                     password_filled = True
                     break
 
                 log.warning("fill ما خدمش — type")
                 await el.click()
-                await human_delay(0.3, 0.5)
                 await page.keyboard.type(password, delay=50)
                 await human_delay(0.3, 0.8)
-
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ كلمة السر (طريقة 2)")
                     password_filled = True
                     break
 
+                log.warning("type ما خدمش — JS")
                 await page.evaluate(
                     """(args) => {
                         const inp = document.querySelector('input[type="password"]');
@@ -308,26 +307,42 @@ class CloudConsole:
                     {"val": password}
                 )
                 await human_delay(0.5, 1.0)
-
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ كلمة السر (طريقة 3)")
                     password_filled = True
                     break
-
             except Exception as e:
-                log.warning(f"فشل كلمة السر مع {sel}: {e}")
+                log.warning(f"فشل pwd {sel}: {e}")
                 continue
 
         if not password_filled:
+            # 📸 Screenshot للفشل
             await take_screenshot(page, "cc_pwd_not_filled")
-            raise RuntimeError("ما قدرتش نكتب كلمة السر")
 
-        # ===== Next =====
+            # 📄 نحفظ HTML
+            try:
+                html = await page.content()
+                with open("/app/data/screenshots/cc_pwd_fail.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+            except Exception:
+                pass
+
+            # 📄 نجيب النص
+            try:
+                body_text = await page.inner_text("body")
+                body_text = body_text[:400].replace('\n', ' | ')
+            except Exception:
+                body_text = "ما قدرتش نقرا النص"
+
+            raise RuntimeError(
+                f"ما قدرتش نكتب كلمة السر\n\n"
+                f"🔗 URL:\n{page.url[:200]}\n\n"
+                f"📄 النص:\n{body_text[:250]}"
+            )
+
         await human_delay(0.5, 1.2)
         await self._click_next(page, "password")
         await human_delay(4, 7)
-
         log.info("✅ تم إدخال email + password")
 
     async def _click_next(self, page, step: str):
@@ -354,7 +369,6 @@ class CloudConsole:
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # طريقة 1: JS click
             try:
                 clicked = await page.evaluate("""
                     () => {
@@ -380,7 +394,6 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"فشل JS click: {e}")
 
-            # طريقة 2: locators
             for sel in [
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
