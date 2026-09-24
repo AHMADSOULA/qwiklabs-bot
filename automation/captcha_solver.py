@@ -16,21 +16,16 @@ class CaptchaSolver:
         self.api_url = "https://api.apitruecaptcha.org/one/gettext"
 
     async def solve_image_captcha(self, image_path: str, length: int = 6) -> str:
-        """
-        يرسل صورة CAPTCHA لـ TrueCaptcha و يرجع النص.
-        """
         if not self.userid or not self.apikey:
             log.warning("ما عنديش TrueCaptcha credentials")
             return None
 
         try:
-            # 1. اقرا الصورة وحولها base64
             with open(image_path, "rb") as f:
                 image_data = f.read()
             b64 = base64.b64encode(image_data).decode()
             log.info(f"📤 نرسل CAPTCHA لـ TrueCaptcha ({len(image_data)} bytes)...")
 
-            # 2. أرسل الطلب
             payload = {
                 "userid": self.userid,
                 "apikey": self.apikey,
@@ -48,7 +43,7 @@ class CaptchaSolver:
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as resp:
                     text = await resp.text()
-                    log.info(f"📥 الرد: {text[:300]}")
+                    log.info(f"📥 رد: {text[:300]}")
 
                     if resp.status != 200:
                         log.error(f"فشل: HTTP {resp.status}")
@@ -57,7 +52,7 @@ class CaptchaSolver:
                     try:
                         data = json.loads(text)
                     except Exception:
-                        log.error(f"ما قدرتش نحلل JSON: {text[:200]}")
+                        log.error(f"ما قدرتش نحلل JSON")
                         return None
 
                     result = data.get("result")
@@ -69,7 +64,7 @@ class CaptchaSolver:
                         return None
 
         except asyncio.TimeoutError:
-            log.error("⏰ Timeout — TrueCaptcha ما جاوبش")
+            log.error("⏰ Timeout")
             return None
         except Exception as e:
             log.error(f"فشل TrueCaptcha: {e}")
@@ -79,38 +74,74 @@ class CaptchaSolver:
 async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
     """
     يكتشف CAPTCHA فـ الصفحة ويحلها.
-    يرجع True إذا لقى وحل، False إذا ما كانش.
     """
     try:
-        # 🔍 نفحص واش كاين CAPTCHA
+        # 🔍 نصور الصفحة كاملة أولاً (باش نشوفو)
+        from utils.screenshot import take_screenshot
+        await take_screenshot(page, "captcha_check")
+
+        # 🔍 نستعملو JS باش نلقاو صورة CAPTCHA (selectors متعددة)
+        captcha_found = await page.evaluate("""
+            () => {
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    const src = (img.src || '').toLowerCase();
+                    const alt = (img.alt || '').toLowerCase();
+                    const id = (img.id || '').toLowerCase();
+                    const cls = (img.className || '').toString().toLowerCase();
+                    if (src.includes('captcha') || alt.includes('captcha') ||
+                        id.includes('captcha') || cls.includes('captcha') ||
+                        src.includes('captchaimage')) {
+                        return {
+                            found: true,
+                            src: img.src,
+                            alt: img.alt,
+                            id: img.id,
+                            className: img.className,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight,
+                        };
+                    }
+                }
+                return { found: false };
+            }
+        """)
+
+        log.info(f"🔍 نتيجة البحث عن CAPTCHA: {captcha_found}")
+
+        if not captcha_found.get("found"):
+            log.info("✅ ما كاينش CAPTCHA")
+            return False
+
+        log.info("🚨 CAPTCHA مطلوب! نحلو...")
+
+        # 📸 نصور الصورة ديال CAPTCHA
         captcha_img = None
         for sel in [
             'img[src*="captcha"]',
             'img[alt*="captcha" i]',
-            '#captchaImage',
-            'img#captcha',
-            'div[role="img"] img',
+            'img[id*="captcha"]',
+            'img[class*="captcha"]',
             'img[src*="Captcha"]',
         ]:
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
                     captcha_img = el
-                    log.info(f"🔍 لقيت CAPTCHA: {sel}")
+                    log.info(f"✅ لقيت img: {sel}")
                     break
             except Exception:
                 continue
 
         if not captcha_img:
+            log.warning("ما لقيتش صورة CAPTCHA بالـ selectors")
             return False
 
-        log.info("🚨 CAPTCHA مطلوب! نحلو بـ TrueCaptcha...")
-
-        # 📸 نصور الصورة
         img_path = "/app/data/screenshots/captcha.png"
         await captcha_img.screenshot(path=img_path)
+        log.info(f"📸 حفظت CAPTCHA فـ {img_path}")
 
-        # 🤖 نحلها (نخمنو الطول: 6)
+        # 🤖 نحلها
         solver = CaptchaSolver(userid, apikey)
         solution = await solver.solve_image_captcha(img_path, length=6)
 
@@ -126,6 +157,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
             'input[type="text"][aria-label*="characters" i]',
             '#captcha',
             'input[name="captcha"]',
+            'input[type="text"]',
         ]:
             try:
                 inp = page.locator(sel).first
@@ -147,7 +179,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
                             btn = page.locator(btn_sel).first
                             if await btn.count() > 0:
                                 await btn.click()
-                                log.info(f"✅ كليك على Next")
+                                log.info(f"✅ كليك Next")
                                 await asyncio.sleep(4)
                                 return True
                         except Exception:
