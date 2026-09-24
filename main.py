@@ -17,21 +17,29 @@ async def post_init(app):
 
 
 async def route_text(update, context):
-    """يوجه الرسائل: إذا كانت جلسة waiting_password → password، وإلا → URL"""
+    """يوجه الرسائل حسب الحالة"""
     from database import db
+    from utils.helpers import extract_urls
+
     user = update.effective_user
     text = update.message.text or ""
 
-    # إذا الرسالة فيها URL
-    if "http" in text:
+    # إذا فيها URL → SSO
+    if extract_urls(text):
         await handlers.handle_url(update, context)
         return
 
-    # إذا عندو جلسة في انتظار password
+    # نقرا الجلسة
     session = await db.get_session(user.id)
-    if session and session[3] == "waiting_password":
-        await handlers.handle_password(update, context)
+    if not session:
         return
+
+    state = session.get("state")
+
+    if state == "waiting_password":
+        await handlers.handle_password(update, context)
+    elif state == "choosing_service":
+        await handlers.handle_service_name(update, context)
 
 
 def main():
