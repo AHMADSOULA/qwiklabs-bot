@@ -12,9 +12,26 @@ log = get_logger("Main")
 
 
 async def post_init(app):
-    """يتم تنفيذها بعد التهيئة"""
     await init_db()
     log.info("✅ تم تهيئة قاعدة البيانات")
+
+
+async def route_text(update, context):
+    """يوجه الرسائل: إذا كانت جلسة waiting_password → password، وإلا → URL"""
+    from database import db
+    user = update.effective_user
+    text = update.message.text or ""
+
+    # إذا الرسالة فيها URL
+    if "http" in text:
+        await handlers.handle_url(update, context)
+        return
+
+    # إذا عندو جلسة في انتظار password
+    session = await db.get_session(user.id)
+    if session and session[3] == "waiting_password":
+        await handlers.handle_password(update, context)
+        return
 
 
 def main():
@@ -27,7 +44,7 @@ def main():
     app.add_handler(CommandHandler("status", handlers.status_cmd))
     app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
     app.add_handler(CallbackQueryHandler(handlers.button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_url))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
 
     log.info("✅ البوت يعمل الآن.")
     app.run_polling(allowed_updates=["message", "callback_query"])
