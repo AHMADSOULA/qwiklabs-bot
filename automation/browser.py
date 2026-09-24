@@ -16,32 +16,29 @@ class StealthBrowser:
     async def start(self):
         self.playwright = await async_playwright().start()
 
-        # ✅ المسار المثبت (فـ Volume)
         profile_dir = config.CHROME_PROFILE_DIR
         os.makedirs(profile_dir, exist_ok=True)
 
-        # ✅ فحص واش الجلسة موجودة من قبل
         session_exists = os.path.exists(
             os.path.join(profile_dir, "Default", "Cookies")
         )
         if session_exists:
-            log.info("✅ وجدت Chrome Profile محفوظ — غادي نستعملو")
+            log.info("✅ وجدت Chrome Profile محفوظ")
         else:
-            log.info("🆕 Chrome Profile جديد — أول مرة")
+            log.info("🆕 Chrome Profile جديد")
 
-                args = [
+        args = [
             "--disable-blink-features=AutomationControlled",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-features=CalculateNativeWinOcclusion",
-            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-features=IsolateOrigins,site-per-process,CalculateNativeWinOcclusion",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-setuid-sandbox",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-infobars",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-accelerated-2d-canvas",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
@@ -80,7 +77,6 @@ class StealthBrowser:
         if proxy:
             launch_kwargs["proxy"] = proxy
 
-        # نحاول Chrome الحقيقي أولاً
         try:
             launch_kwargs["channel"] = "chrome"
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
@@ -89,13 +85,10 @@ class StealthBrowser:
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
-        # ✅ نضيف الـ STEALTH
         await self.context.add_init_script(STEALTH_JS)
-
-        # ✅ منع الكشف من خلال الـ navigator
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """)
+        await self.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
 
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
@@ -105,7 +98,6 @@ class StealthBrowser:
 
     async def close(self):
         if self.context:
-            # ✅ نحفظ الـ cookies قبل الإغلاق
             try:
                 cookies = await self.context.cookies()
                 profile_dir = config.CHROME_PROFILE_DIR
