@@ -20,6 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # إنشاء المجلدات
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/logs /app/data/screenshots
 
 CMD ["python", "main.py"]
