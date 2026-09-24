@@ -23,8 +23,8 @@ class CloudConsole:
         log.info(f"URL بعد الفتح: {page.url}")
 
         try:
-            # 🔄 حلقة: نحاول 3 مرات باش نتعاملو مع signin المتكرر
-            for attempt in range(3):
+            # 🔄 حلقة: نحاول 4 مرات باش نتعاملو مع signin المتكرر
+            for attempt in range(4):
                 log.info(f"--- محاولة {attempt + 1} ---")
 
                 # 1. ننتظر الصفحة
@@ -42,7 +42,6 @@ class CloudConsole:
                 if welcome_handled:
                     await human_delay(4, 6)
                     await take_screenshot(page, f"cc_after_welcome_{attempt}")
-                    # بعد Welcome ممكن يرجع لـ Sign in → نكملو الحلقة
 
                 # 4. إذا وصلنا للـ Console الحقيقي، نخرجو
                 if await self._is_console_ready(page):
@@ -69,10 +68,8 @@ class CloudConsole:
             return False
         if "signin" in url.lower() or "accounts.google.com" in url:
             return False
-        # خاصنا نكونو فـ صفحة مشروع
         if "project=" in url:
             return True
-        # ولا فـ home/dashboard
         if "/home/" in url or "/welcome" in url:
             return True
         return False
@@ -98,7 +95,6 @@ class CloudConsole:
             return True
         if "signin" in url.lower():
             return True
-        # فحص الحقول
         for sel in [
             'input[type="email"]',
             'input[type="text"][name="identifier"]',
@@ -113,9 +109,9 @@ class CloudConsole:
         return False
 
     async def _do_signin(self, page, username: str, password: str):
-        """تسجيل دخول ذكي: يفحص واش محتاج email ولا password ولا بجوج"""
+        """تسجيل دخول ذكي"""
 
-        # نحاول نعمر email (إلا كان الحقل)
+        # نحاول نعمر email
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -141,7 +137,7 @@ class CloudConsole:
             await self._click_next(page, "email")
             await human_delay(3, 5)
 
-        # نحاول نعمر password (إلا كان الحقل)
+        # نحاول نعمر password
         password_filled = False
         for sel in [
             'input[type="password"]',
@@ -167,7 +163,7 @@ class CloudConsole:
             await human_delay(4, 7)
 
         if not email_filled and not password_filled:
-            log.warning("ما لقيتش حتى حقل — ممكن الصفحة تبدلت")
+            log.warning("ما لقيتش حتى حقل")
 
     async def _click_next(self, page, step: str):
         for sel in [
@@ -191,33 +187,63 @@ class CloudConsole:
     async def _handle_welcome_page(self, page, max_attempts: int = 2) -> bool:
         """يتعامل مع صفحة Welcome. يرجع True إذا ضغط Accept."""
         for attempt in range(max_attempts):
-            await human_delay(2, 3)
+            await human_delay(3, 5)
 
-            accept_buttons = [
+            # طريقة 1: JS click (أقوى)
+            try:
+                clicked = await page.evaluate("""
+                    () => {
+                        const allClickable = document.querySelectorAll(
+                            'button, a, [role="button"], input[type="submit"]'
+                        );
+                        for (const el of allClickable) {
+                            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                            if (text.includes('accept') || 
+                                text.includes('agree') || 
+                                text.includes('confirm') ||
+                                text.includes('got it') ||
+                                text.includes('قبول') ||
+                                text.includes('موافق')) {
+                                el.click();
+                                return el.innerText || 'clicked';
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked:
+                    log.info(f"✅ ضغط على: {clicked}")
+                    await human_delay(4, 6)
+                    return True
+            except Exception as e:
+                log.warning(f"فشل JS click: {e}")
+
+            # طريقة 2: Playwright locators
+            accept_selectors = [
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
                 'button:has-text("Agree")',
-                'button:has-text("موافق")',
-                'button:has-text("قبول")',
                 'a:has-text("Accept")',
-                'div[role="button"]:has-text("Accept")',
+                'a:has-text("Agree")',
+                '[role="button"]:has-text("Accept")',
+                '[role="button"]:has-text("Agree")',
                 'button:has-text("Confirm")',
                 'button:has-text("Got it")',
+                'button:has-text("Continue")',
+                'button:has-text("OK")',
             ]
 
-            for sel in accept_buttons:
+            for sel in accept_selectors:
                 try:
                     el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        log.info(f"✅ لقيت زر Accept: {sel}")
-                        await human_move(page)
-                        await el.click()
+                    if await el.count() > 0:
+                        log.info(f"✅ لقيت: {sel}")
+                        await el.click(force=True)
                         await human_delay(4, 6)
                         return True
                 except Exception:
                     continue
 
-            # ما كاينش زر Accept → نخرجو
             break
         return False
 
