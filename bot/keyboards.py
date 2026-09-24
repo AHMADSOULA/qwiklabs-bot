@@ -10,7 +10,6 @@ def main_menu():
 
 
 def region_menu():
-    """أزرار اختيار المنطقة"""
     keyboard = [
         [InlineKeyboardButton("🇺🇸 US Central (أرخص)", callback_data="region:us-central1")],
         [InlineKeyboardButton("🇺🇸 US East", callback_data="region:us-east1")],
@@ -25,7 +24,6 @@ def region_menu():
 
 
 def memory_menu():
-    """أزرار اختيار RAM"""
     keyboard = [
         [
             InlineKeyboardButton("512 MiB", callback_data="mem:512Mi"),
@@ -45,7 +43,6 @@ def memory_menu():
 
 
 def cpu_menu():
-    """أزرار اختيار CPU"""
     keyboard = [
         [
             InlineKeyboardButton("1 vCPU", callback_data="cpu:1"),
@@ -61,7 +58,6 @@ def cpu_menu():
 
 
 def confirm_menu():
-    """أزرار التأكيد"""
     keyboard = [
         [
             InlineKeyboardButton("✅ تأكيد النشر", callback_data="confirm:yes"),
