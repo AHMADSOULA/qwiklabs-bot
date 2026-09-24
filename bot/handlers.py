@@ -19,8 +19,6 @@ from automation.cloud_console import CloudConsole
 log = get_logger("Handlers")
 job_lock = asyncio.Lock()
 
-DEFAULT_IMAGE = "docker.io/ajndjd2/ahmed-vip1"
-
 
 # ==================== أوامر ====================
 
@@ -59,6 +57,9 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.clear_session(user.id)
     # نظف الـ browser
+    task = context.bot_data.pop(f"keepalive_{user.id}", None)
+    if task:
+        task.cancel()
     b = context.bot_data.pop(f"browser_{user.id}", None)
     context.bot_data.pop(f"page_{user.id}", None)
     context.bot_data.pop(f"ctx_{user.id}", None)
@@ -78,6 +79,21 @@ async def send_photo(msg, filepath, caption=""):
             await msg.reply_photo(photo=InputFile(f), caption=caption[:1000])
     except Exception as e:
         log.error(f"فشل إرسال الصورة: {e}")
+
+
+async def keep_page_alive(page, user_id, context):
+    """يبقي الـ page نشيط باش ما يطيحش"""
+    try:
+        while True:
+            await asyncio.sleep(15)
+            try:
+                await page.evaluate("() => Date.now()")
+                log.debug(f"💓 Keep-alive: {user_id}")
+            except Exception as e:
+                log.warning(f"⚠️ Keep-alive فشل: {e}")
+                break
+    except asyncio.CancelledError:
+        pass
 
 
 # ==================== استقبال SSO ====================
@@ -147,26 +163,28 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             context.bot_data[f"browser_{user_id}"] = browser
             context.bot_data[f"ctx_{user_id}"] = ctx
 
+            # ✅ بدء keep-alive
+            ka_task = asyncio.create_task(keep_page_alive(page, user_id, context))
+            context.bot_data[f"keepalive_{user_id}"] = ka_task
+
             await db.set_session(
                 user_id=user_id,
                 username=email,
                 password=password,
-                state="waiting_password" if not password else "ready_to_login"
+                state="waiting_password" if not password else "choosing_image"
             )
 
             if password:
-                # ✅ عندنا email + password → نسألو على اسم Service
-                await db.set_session(user_id=user_id, state="choosing_service")
+                # ✅ عندنا password → نسألو على اسم الحاوية
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n"
                     f"🔑 كلمة السر مستخرجة\n\n"
-                    f"📦 *أرسل اسم الـ Service:*\n"
-                    f"(مثال: `ahmed-vip1`)",
+                    f"🐳 *أرسل اسم الحاوية (Docker Image)*\n"
+                    f"مثال: `docker.io/ajndjd2/ahmed-vip1`",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             else:
-                # ❌ ماعندناش password → نسألو
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 *email:* `{email}`\n\n"
@@ -199,7 +217,6 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session or session.get("state") != "waiting_password":
         return
 
-    # نحذف الرسالة اللي فيها الباسورد
     try:
         await update.message.delete()
     except Exception:
@@ -208,46 +225,56 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.set_session(
         user_id=user.id,
         password=text,
-        state="choosing_service"
+        state="choosing_image"
     )
 
     await update.message.reply_text(
         f"✅ تم استلام كلمة السر\n\n"
-        f"📦 *أرسل اسم الـ Service:*\n"
-        f"(مثال: `ahmed-vip1`)",
+        f"🐳 *أرسل اسم الحاوية (Docker Image)*\n"
+        f"مثال: `docker.io/ajndjd2/ahmed-vip1`",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-# ==================== استقبال اسم الخدمة ====================
+# ==================== استقبال اسم الحاوية ====================
 
-async def handle_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_image_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").strip()
 
     session = await db.get_session(user.id)
-    if not session or session.get("state") != "choosing_service":
+    if not session or session.get("state") != "choosing_image":
         return
 
-    # validate: حروف صغيرة، أرقام، شرطات
-    if not re.match(r'^[a-z][a-z0-9\-]*[a-z0-9]$', text):
+    # تحقق من الصيغة
+    if not text.startswith("docker.io/") and "/" not in text:
         await update.message.reply_text(
-            "⚠️ اسم غير صالح.\n"
-            "استعمل: حروف صغيرة، أرقام، شرطات.\n"
-            "يبدأ بحرف، ينتهي بحرف/رقم.\n"
-            "مثال: `ahmed-vip1`",
+            "⚠️ صيغة غير صالحة.\n"
+            "مثال: `docker.io/ajndjd2/ahmed-vip1`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
+    # استخراج اسم الـ Service (آخر جزء)
+    service_name = text.split("/")[-1].split(":")[0].lower()
+    # تنظيف: حروف صغيرة وأرقام وشرطات فقط
+    service_name = re.sub(r'[^a-z0-9\-]', '-', service_name)
+    service_name = re.sub(r'-+', '-', service_name).strip('-')
+    # خاص يبدا بحرف
+    if not service_name or not service_name[0].isalpha():
+        service_name = f"svc-{service_name}"
+
     await db.set_session(
         user_id=user.id,
-        service_name=text,
+        image=text,
+        service_name=service_name,
         state="choosing_region"
     )
 
     await update.message.reply_text(
-        f"✅ اسم الخدمة: `{text}`\n\n"
+        f"✅ *تم استخراج المعلومات:*\n\n"
+        f"🐳 Image: `{text}`\n"
+        f"📦 Service: `{service_name}`\n\n"
         f"🌍 *اختر المنطقة (Region):*",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=region_menu(),
@@ -261,7 +288,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     data = query.data
 
-    # status / help
     if data == "status":
         await query.answer()
         await status_cmd(update, context)
@@ -271,7 +297,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(messages.WELCOME, parse_mode=ParseMode.MARKDOWN)
         return
 
-    # region
     if data.startswith("region:"):
         region = data.split(":", 1)[1]
         if region == "auto":
@@ -285,7 +310,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # memory
     if data.startswith("mem:"):
         mem = data.split(":", 1)[1]
         if mem == "auto":
@@ -299,7 +323,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # cpu
     if data.startswith("cpu:"):
         cpu = data.split(":", 1)[1]
         if cpu == "auto":
@@ -310,8 +333,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = await db.get_session(user.id)
         summary = (
             f"📋 *ملخص النشر:*\n\n"
+            f"🐳 Image: `{session['image']}`\n"
             f"📦 Service: `{session['service_name']}`\n"
-            f"🐳 Image: `{DEFAULT_IMAGE}`\n"
             f"🌍 Region: `{session['region']}`\n"
             f"💾 RAM: `{session['memory']}`\n"
             f"⚙️ CPU: `{session['cpu']}`\n\n"
@@ -322,13 +345,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # confirm
     if data.startswith("confirm:"):
         choice = data.split(":", 1)[1]
         await query.answer()
 
         if choice == "no":
             await db.clear_session(user.id)
+            task = context.bot_data.pop(f"keepalive_{user.id}", None)
+            if task:
+                task.cancel()
             b = context.bot_data.pop(f"browser_{user.id}", None)
             context.bot_data.pop(f"page_{user.id}", None)
             context.bot_data.pop(f"ctx_{user.id}", None)
@@ -340,7 +365,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("❌ تم الإلغاء.")
             return
 
-        # yes → ننشر
         await query.message.edit_text(
             "🚀 *بدء النشر...*\n\n🔹 تسجيل الدخول...",
             parse_mode=ParseMode.MARKDOWN,
@@ -368,6 +392,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 raise RuntimeError("الجلسة انتهت. أرسل SSO من جديد.")
 
             session = await db.get_session(user_id)
+            image = session["image"]
             service_name = session["service_name"]
             region = session["region"]
             memory = session["memory"]
@@ -398,8 +423,9 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
 
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n"
-                f"🔹 نشر `{service_name}` على `{region}`...\n"
-                f"💾 {memory} | ⚙️ {cpu} vCPU\n"
+                f"🔹 نشر `{service_name}`...\n"
+                f"🐳 `{image}`\n"
+                f"🌍 {region} | 💾 {memory} | ⚙️ {cpu}\n"
                 f"⏳ 1-3 دقائق",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -411,7 +437,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             )
             url = await deployer.deploy(
                 service_name=service_name,
-                image=DEFAULT_IMAGE,
+                image=image,
                 memory=memory,
                 cpu=cpu,
                 port=8080,
@@ -422,11 +448,10 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             await db.clear_session(user_id)
 
             await msg.edit_text(
-                f"✅ *#{job_id}* — تم النشر بنجاح!\n\n"
+                f"✅ *#{job_id}* — تم النشر!\n\n"
                 f"🔗 *الرابط:*\n{url}\n\n"
                 f"📦 `{service_name}`\n"
-                f"🌍 `{region}`\n"
-                f"💾 `{memory}` | ⚙️ `{cpu}`",
+                f"🌍 `{region}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -439,6 +464,10 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
         finally:
+            # إلغاء keep-alive
+            task = context.bot_data.pop(f"keepalive_{user_id}", None)
+            if task:
+                task.cancel()
             try:
                 pg = context.bot_data.pop(f"page_{user_id}", None)
                 if pg:
@@ -448,7 +477,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                         pass
             except Exception:
                 pass
-
             b = context.bot_data.pop(f"browser_{user_id}", None)
             context.bot_data.pop(f"ctx_{user_id}", None)
             if b:
