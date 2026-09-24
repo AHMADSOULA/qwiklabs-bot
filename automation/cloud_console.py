@@ -39,7 +39,7 @@ class CloudConsole:
                 if await self._is_signin_page(page):
                     log.info(f"🔑 صفحة Sign in")
 
-                    # نحل CAPTCHA أولاً إذا كان
+                    # نحل CAPTCHA أولاً
                     try:
                         from automation.captcha_solver import detect_and_solve_captcha
                         from config import config
@@ -57,7 +57,7 @@ class CloudConsole:
                     except Exception as e:
                         log.warning(f"فشل حل CAPTCHA: {e}")
 
-                    # إذا مازال Sign in، نسجلو
+                    # نسجلو
                     try:
                         await self._do_signin(page, self.username, self.password)
                         await human_delay(5, 7)
@@ -67,25 +67,24 @@ class CloudConsole:
 
                     continue
 
-                # 3. Welcome?
+                # 3. Welcome؟
                 if await self._is_welcome_page(page):
-                    log.info("📋 صفحة Welcome — نضغط Accept")
+                    log.info("📋 Welcome — نضغط Accept")
                     clicked = await self._handle_welcome_page(page)
                     if clicked:
                         await human_delay(4, 6)
                     continue
 
-                # 4. خطأ كلمة سر؟
+                # 4. كلمة سر غلط؟
                 if await self._has_wrong_password_error(page):
                     await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
                     raise RuntimeError("❌ كلمة السر غلط. جدد الرابط.")
 
-                # 5. Verify?
+                # 5. Verify؟
                 if await self._has_verify_required(page):
                     await take_screenshot(page, f"cc_verify_{attempt}")
                     raise RuntimeError("❌ Google كتطلب verify.")
 
-                # غير معروفة
                 log.warning(f"❓ صفحة غير معروفة: {page.url[:100]}")
                 await human_delay(3, 5)
 
@@ -158,6 +157,7 @@ class CloudConsole:
             'input[type="email"]',
             'input[type="text"][name="identifier"]',
             'input[name="identifier"]',
+            'input[type="password"]',
         ]:
             try:
                 if await page.locator(sel).count() > 0:
@@ -167,11 +167,9 @@ class CloudConsole:
         return False
 
     async def _do_signin(self, page, username: str, password: str):
-        """تسجيل دخول ذكي: email ثم password"""
-
         await take_screenshot(page, "cc_before_signin")
 
-        # 🔍 نسجل الحقول
+        # نسجل الحقول
         try:
             inputs_info = await page.evaluate("""
                 () => {
@@ -205,13 +203,11 @@ class CloudConsole:
                 await human_delay(0.2, 0.5)
                 await el.fill(username)
                 await human_delay(0.3, 0.8)
-
                 val = await el.input_value()
                 if val.strip():
                     email_filled = True
                     break
 
-                # type
                 await el.click()
                 await page.keyboard.type(username, delay=50)
                 await human_delay(0.3, 0.8)
@@ -220,7 +216,6 @@ class CloudConsole:
                     email_filled = True
                     break
 
-                # JS
                 await page.evaluate(
                     """(args) => {
                         const inputs = document.querySelectorAll('input');
@@ -253,12 +248,11 @@ class CloudConsole:
                 f"النص: {body_text[:150]}"
             )
 
-        # Next
         await self._click_next(page, "email")
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # نحل CAPTCHA إذا كان
+        # حل CAPTCHA
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             from config import config
@@ -296,7 +290,6 @@ class CloudConsole:
                 await human_delay(0.2, 0.5)
                 await el.fill(password)
                 await human_delay(0.3, 0.8)
-
                 val = await el.input_value()
                 if val.strip():
                     password_filled = True
