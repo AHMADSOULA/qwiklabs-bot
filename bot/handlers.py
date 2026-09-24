@@ -6,7 +6,7 @@ from telegram.constants import ParseMode
 from bot import messages
 from bot.keyboards import main_menu
 from database import db
-from utils.helpers import extract_urls
+from utils.helpers import extract_urls, human_delay
 from utils.logger import get_logger
 from utils.screenshot import take_screenshot
 from automation.browser import StealthBrowser
@@ -64,6 +64,7 @@ async def send_photo(msg, filepath, caption=""):
         log.error(f"فشل إرسال الصورة: {e}")
 
 
+# ====== الدخول: SSO ======
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     urls = extract_urls(text)
@@ -88,16 +89,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.set_session(user.id, job_id, sso_url, None, "opening_sso")
 
     msg = await update.message.reply_text(
-        f"📥 تم استلام المهمة `#{job_id}`\n\n"
-        f"🔹 جاري فتح SSO...",
+        f"📥 تم استلام المهمة `#{job_id}`\n\n🔹 جاري فتح SSO...",
         parse_mode=ParseMode.MARKDOWN,
     )
-    # ✅ مرر context
     asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
 
 
+# ====== الخطوة 1: فتح SSO + username ======
 async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
-    # ✅ context الآن parameter
     async with job_lock:
         browser = StealthBrowser()
         try:
@@ -122,14 +121,12 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
                 f"🚀 *#{job_id}*\n\n🔹 استخراج username...",
                 parse_mode=ParseMode.MARKDOWN,
             )
-
             username = await ql.extract_credentials(page)
 
             shot = await take_screenshot(page, "02_username")
             if shot:
                 await send_photo(msg, shot, f"📸 2. username: `{username}`")
 
-            # حفظ الجلسة فـ bot_data
             context.bot_data[f"page_{user_id}"] = page
             context.bot_data[f"browser_{user_id}"] = browser
             context.bot_data[f"ctx_{user_id}"] = ctx
@@ -158,6 +155,7 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
                 pass
 
 
+# ====== الخطوة 2: password ======
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     password = (update.message.text or "").strip()
@@ -183,6 +181,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ))
 
 
+# ====== الخطوة 2 الفعلية ======
 async def run_step2_login(job_id, username, password, msg, user_id, context):
     async with job_lock:
         try:
@@ -195,7 +194,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول لـ Cloud Console...",
                 parse_mode=ParseMode.MARKDOWN,
             )
-
             cc = CloudConsole(page.context)
             console_page = await cc.login(username, password)
 
@@ -203,12 +201,20 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             if shot:
                 await send_photo(msg, shot, "📸 3. بعد تسجيل الدخول")
 
-            project_id = await get_project_id(console_page)
+            # ✅ نستنى شوية باش الصفحة تكمل التحميل
+            await asyncio.sleep(5)
+
+            project_id = await get_project_id(console_page, username)
             if not project_id:
                 shot = await take_screenshot(console_page, "04_no_project")
                 if shot:
-                    await send_photo(msg, shot, "❌ تعذر استخراج project ID")
-                raise RuntimeError("تعذر استخراج project ID")
+                    await send_photo(
+                        msg, shot,
+                        f"❌ تعذر استخراج project ID\nURL: {console_page.url[:200]}"
+                    )
+                raise RuntimeError(
+                    f"تعذر استخراج project ID\nURL: {console_page.url[:200]}"
+                )
 
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n"
@@ -294,24 +300,71 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                     pass
 
 
-async def get_project_id(page) -> str:
+# ====== استخراج project_id ======
+async def get_project_id(page, username: str = None) -> str:
     import re
+
+    # 1. من URL
     url = page.url
     m = re.search(r'project=([a-z0-9\-]+)', url)
     if m:
         return m.group(1)
+
+    # 2. من API
     try:
         pid = await page.evaluate("""
-            () => {
-                if (window._gcp_project) return window._gcp_project;
-                const el = document.querySelector('[data-project-id]');
-                if (el) return el.getAttribute('data-project-id');
+            async () => {
+                try {
+                    const res = await fetch(
+                        'https://cloudresourcemanager.googleapis.com/v1/projects',
+                        { credentials: 'include' }
+                    );
+                    const data = await res.json();
+                    if (data.projects && data.projects.length > 0) {
+                        return data.projects[0].projectId;
+                    }
+                } catch(e) {}
                 return null;
             }
         """)
-        return pid
-    except Exception:
-        return None
+        if pid:
+            log.info(f"✅ project_id من API: {pid}")
+            return pid
+    except Exception as e:
+        log.warning(f"فشل API: {e}")
+
+    # 3. من Home
+    try:
+        await page.goto(
+            "https://console.cloud.google.com/home/dashboard",
+            wait_until="domcontentloaded",
+        )
+        await human_delay(3, 5)
+        m = re.search(r'project=([a-z0-9\-]+)', page.url)
+        if m:
+            return m.group(1)
+
+        pid = await page.evaluate("""
+            () => {
+                const el = document.querySelector('[data-project-id]');
+                if (el) return el.getAttribute('data-project-id');
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.includes('project')) {
+                        const v = localStorage.getItem(k);
+                        const m = v && v.match(/[a-z]+-[a-z0-9]+-[0-9]+/);
+                        if (m) return m[0];
+                    }
+                }
+                return null;
+            }
+        """)
+        if pid:
+            return pid
+    except Exception as e:
+        log.warning(f"فشل استخراج من Home: {e}")
+
+    return None
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
