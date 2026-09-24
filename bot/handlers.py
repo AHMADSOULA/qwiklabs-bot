@@ -1,4 +1,5 @@
 import asyncio
+import re
 from telegram import Update, InputFile
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
@@ -21,7 +22,7 @@ job_lock = asyncio.Lock()
 DEFAULT_IMAGE = "docker.io/ajndjd2/ahmed-vip1"
 
 
-# ===== أوامر =====
+# ==================== أوامر ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -57,6 +58,15 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.clear_session(user.id)
+    # نظف الـ browser
+    b = context.bot_data.pop(f"browser_{user.id}", None)
+    context.bot_data.pop(f"page_{user.id}", None)
+    context.bot_data.pop(f"ctx_{user.id}", None)
+    if b:
+        try:
+            await b.close()
+        except Exception:
+            pass
     await update.message.reply_text("🚫 تم الإلغاء.")
 
 
@@ -70,7 +80,7 @@ async def send_photo(msg, filepath, caption=""):
         log.error(f"فشل إرسال الصورة: {e}")
 
 
-# ===== استقبال SSO =====
+# ==================== استقبال SSO ====================
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
@@ -94,7 +104,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     job_id = await db.add_job(user.id, sso_url)
     await db.set_session(
-        user_id=user.id, job_id=job_id, sso_url=sso_url,
+        user_id=user.id,
+        job_id=job_id,
+        sso_url=sso_url,
         state="opening_sso"
     )
 
@@ -105,7 +117,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
 
 
-# ===== Step 1: فتح SSO =====
+# ==================== Step 1: فتح SSO ====================
 
 async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
     async with job_lock:
@@ -135,7 +147,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             context.bot_data[f"browser_{user_id}"] = browser
             context.bot_data[f"ctx_{user_id}"] = ctx
 
-            # تحديث session
             await db.set_session(
                 user_id=user_id,
                 username=email,
@@ -144,17 +155,16 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             )
 
             if password:
-                # ✅ عندنا email + password → نكملو مباشرة
+                # ✅ عندنا email + password → نسألو على اسم Service
+                await db.set_session(user_id=user_id, state="choosing_service")
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n"
-                    f"🔑 كلمة السر موجودة\n\n"
-                    f"🔹 جاري تسجيل الدخول...",
+                    f"🔑 كلمة السر مستخرجة\n\n"
+                    f"📦 *أرسل اسم الـ Service:*\n"
+                    f"(مثال: `ahmed-vip1`)",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                asyncio.create_task(run_step2_login(
-                    job_id, email, password, msg, user.id, context
-                ))
             else:
                 # ❌ ماعندناش password → نسألو
                 await msg.edit_text(
@@ -179,7 +189,7 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
                 pass
 
 
-# ===== استقبال password =====
+# ==================== استقبال password ====================
 
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -188,9 +198,6 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = await db.get_session(user.id)
     if not session or session.get("state") != "waiting_password":
         return
-
-    job_id = session["job_id"]
-    email = session["username"]
 
     # نحذف الرسالة اللي فيها الباسورد
     try:
@@ -206,13 +213,13 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ تم استلام كلمة السر\n\n"
-        f"📦 *أرسل اسم الـ Service الآن*\n"
+        f"📦 *أرسل اسم الـ Service:*\n"
         f"(مثال: `ahmed-vip1`)",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-# ===== استقبال اسم الخدمة =====
+# ==================== استقبال اسم الخدمة ====================
 
 async def handle_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -222,12 +229,11 @@ async def handle_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not session or session.get("state") != "choosing_service":
         return
 
-    # validate: حروف صغيرة، أرقام، شرطات فقط
-    import re
+    # validate: حروف صغيرة، أرقام، شرطات
     if not re.match(r'^[a-z][a-z0-9\-]*[a-z0-9]$', text):
         await update.message.reply_text(
             "⚠️ اسم غير صالح.\n"
-            "استعمل: حروف صغيرة، أرقام، شرطات فقط.\n"
+            "استعمل: حروف صغيرة، أرقام، شرطات.\n"
             "يبدأ بحرف، ينتهي بحرف/رقم.\n"
             "مثال: `ahmed-vip1`",
             parse_mode=ParseMode.MARKDOWN,
@@ -248,7 +254,7 @@ async def handle_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
-# ===== استقبال اختيارات المستخدم =====
+# ==================== الأزرار ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -271,7 +277,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if region == "auto":
             region = "us-central1"
         await db.set_session(user_id=user.id, region=region, state="choosing_memory")
-        await query.answer()
+        await query.answer(f"✅ {region}")
         await query.message.edit_text(
             f"✅ Region: `{region}`\n\n💾 *اختر RAM:*",
             parse_mode=ParseMode.MARKDOWN,
@@ -285,7 +291,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mem == "auto":
             mem = "1Gi"
         await db.set_session(user_id=user.id, memory=mem, state="choosing_cpu")
-        await query.answer()
+        await query.answer(f"✅ {mem}")
         await query.message.edit_text(
             f"✅ RAM: `{mem}`\n\n⚙️ *اختر CPU:*",
             parse_mode=ParseMode.MARKDOWN,
@@ -299,7 +305,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cpu == "auto":
             cpu = "1"
         await db.set_session(user_id=user.id, cpu=cpu, state="confirming")
-        await query.answer()
+        await query.answer(f"✅ {cpu}")
 
         session = await db.get_session(user.id)
         summary = (
@@ -323,11 +329,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if choice == "no":
             await db.clear_session(user.id)
+            b = context.bot_data.pop(f"browser_{user.id}", None)
+            context.bot_data.pop(f"page_{user.id}", None)
+            context.bot_data.pop(f"ctx_{user.id}", None)
+            if b:
+                try:
+                    await b.close()
+                except Exception:
+                    pass
             await query.message.edit_text("❌ تم الإلغاء.")
             return
 
         # yes → ننشر
-        await query.message.edit_text("🚀 بدء النشر...")
+        await query.message.edit_text(
+            "🚀 *بدء النشر...*\n\n🔹 تسجيل الدخول...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
         session = await db.get_session(user.id)
         job_id = session["job_id"]
@@ -340,7 +357,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ===== Step 2: تسجيل الدخول + النشر =====
+# ==================== Step 2: النشر ====================
 
 async def run_step2_login(job_id, username, password, msg, user_id, context):
     async with job_lock:
@@ -356,7 +373,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             memory = session["memory"]
             cpu = session["cpu"]
 
-            # تسجيل الدخول
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...",
                 parse_mode=ParseMode.MARKDOWN,
@@ -364,7 +380,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             cc = CloudConsole(page.context)
             console_page = await cc.login(username, password)
 
-            # project_id
             await asyncio.sleep(5)
             project_id = await get_project_id(console_page, username)
             if not project_id:
@@ -378,7 +393,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            # token
             from automation.cloudrun_deployer import CloudRunDeployer, extract_access_token
             token = await extract_access_token(console_page)
 
@@ -390,7 +404,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            # deploy
             deployer = CloudRunDeployer(
                 access_token=token,
                 project_id=project_id,
@@ -426,7 +439,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
         finally:
-            # تنظيف
             try:
                 pg = context.bot_data.pop(f"page_{user_id}", None)
                 if pg:
@@ -446,14 +458,14 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                     pass
 
 
-# ===== استخراج project_id =====
+# ==================== استخراج project_id ====================
 
 async def get_project_id(page, username: str = None) -> str:
-    import re
     url = page.url
     m = re.search(r'project=([a-z0-9\-]+)', url)
     if m:
         return m.group(1)
+
     try:
         pid = await page.evaluate("""
             async () => {
