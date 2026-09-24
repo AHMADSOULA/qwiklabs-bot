@@ -1,3 +1,4 @@
+import asyncio
 from utils.logger import get_logger
 from utils.helpers import human_delay, human_move
 from utils.screenshot import take_screenshot
