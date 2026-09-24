@@ -23,36 +23,55 @@ class CloudConsole:
         log.info(f"URL بعد الفتح: {page.url}")
 
         try:
-            # 🔄 حلقة: نحاول 4 مرات باش نتعاملو مع signin المتكرر
-            for attempt in range(4):
+            # 🔄 حلقة ذكية: نحاول 3 مرات
+            for attempt in range(3):
                 log.info(f"--- محاولة {attempt + 1} ---")
-
-                # 1. ننتظر الصفحة
                 await self._wait_for_login_or_console(page)
 
-                # 2. إذا كانت Sign in، سجل
+                # 🔍 فحص: هل توجد رسالة خطأ كلمة السر؟
+                if await self._has_wrong_password_error(page):
+                    log.warning("⚠️ كلمة السر غلط! Google رفضت الجلسة")
+                    await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
+                    raise RuntimeError(
+                        "❌ كلمة السر غير صحيحة أو انتهت صلاحيتها.\n"
+                        "الرابط صالح 5 سوايع فقط. جدد الرابط."
+                    )
+
+                # 🔍 فحص: هل توجد رسالة verify phone/email؟
+                if await self._has_verify_required(page):
+                    log.warning("⚠️ Google كتطلب verify phone/email")
+                    await take_screenshot(page, f"cc_verify_{attempt}")
+                    raise RuntimeError(
+                        "❌ Google كتطلب التحقق من الهاتف/الإيميل.\n"
+                        "خاصك تسجل دخول يدوياً أول مرة.\n"
+                        "شوف: https://console.cloud.google.com"
+                    )
+
+                # 1. إذا كانت Sign in → سجل
                 if await self._is_signin_page(page):
-                    log.info(f"صفحة Sign in (محاولة {attempt + 1}) — بدء التسجيل")
+                    log.info(f"صفحة Sign in (محاولة {attempt + 1})")
                     await self._do_signin(page, self.username, self.password)
-                    await human_delay(4, 6)
+                    await human_delay(5, 7)
                     await take_screenshot(page, f"cc_after_signin_{attempt}")
 
-                # 3. نتعاملو مع Welcome إذا كانت
-                welcome_handled = await self._handle_welcome_page(page)
-                if welcome_handled:
-                    await human_delay(4, 6)
-                    await take_screenshot(page, f"cc_after_welcome_{attempt}")
+                # 2. نتعاملو مع Welcome
+                await self._handle_welcome_page(page)
+                await human_delay(4, 6)
 
-                # 4. إذا وصلنا للـ Console الحقيقي، نخرجو
+                # 3. إذا وصلنا للـ Console → خلاص
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console فـ المحاولة {attempt + 1}")
                     break
 
-                # 5. ننتظر شوية قبل المحاولة الجاية
-                await human_delay(3, 5)
+                # 4. إذا رجع لـ Sign in بعد Accept → نوقف
+                #    حيت كيعاود نفس المشكل
+                if await self._is_signin_page(page):
+                    log.warning("رجع لـ Sign in بعد Accept")
+                    await take_screenshot(page, f"cc_loop_{attempt}")
+                    # ننتظر شوية قبل المحاولة التالية
+                    await human_delay(3, 5)
 
-            # 6. نتأكدو من Console
-            await self._wait_for_console(page)
+            await self._wait_for_console(page, timeout=30000)
             log.info(f"✅ URL النهائي: {page.url}")
             return page
 
@@ -61,8 +80,49 @@ class CloudConsole:
             await take_screenshot(page, "cc_error")
             raise
 
+    # ==========================================
+    # 🔍 دوال الفحص
+    # ==========================================
+
+    async def _has_wrong_password_error(self, page) -> bool:
+        """يتحقق واش Google عرضت رسالة كلمة سر غلط"""
+        try:
+            error_texts = [
+                'Incorrect password',
+                'Wrong password',
+                'كلمة السر غير صحيحة',
+                'Try again or click',
+            ]
+            content = await page.content()
+            for txt in error_texts:
+                if txt.lower() in content.lower():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    async def _has_verify_required(self, page) -> bool:
+        """يتحقق واش Google كتطلب verify phone/email"""
+        try:
+            verify_texts = [
+                'Verify it',
+                'verify your',
+                'Confirm your',
+                'Enter the code',
+                'Get a verification code',
+                '2-Step Verification',
+                'phone number',
+                'recovery email',
+            ]
+            content = await page.content()
+            for txt in verify_texts:
+                if txt.lower() in content.lower():
+                    return True
+        except Exception:
+            pass
+        return False
+
     async def _is_console_ready(self, page) -> bool:
-        """يتحقق واش وصلنا لـ Console الحقيقي"""
         url = page.url
         if "console.cloud.google.com" not in url:
             return False
@@ -109,9 +169,7 @@ class CloudConsole:
         return False
 
     async def _do_signin(self, page, username: str, password: str):
-        """تسجيل دخول ذكي"""
-
-        # نحاول نعمر email
+        # ===== Email =====
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -126,6 +184,7 @@ class CloudConsole:
                     await human_move(page)
                     await el.click()
                     await human_delay(0.3, 0.8)
+                    await el.fill("")  # امسح الأول
                     await el.fill(username)
                     await human_delay(0.5, 1.2)
                     email_filled = True
@@ -137,7 +196,7 @@ class CloudConsole:
             await self._click_next(page, "email")
             await human_delay(3, 5)
 
-        # نحاول نعمر password
+        # ===== Password =====
         password_filled = False
         for sel in [
             'input[type="password"]',
@@ -151,6 +210,7 @@ class CloudConsole:
                     await human_move(page)
                     await el.click()
                     await human_delay(0.3, 0.8)
+                    await el.fill("")
                     await el.fill(password)
                     await human_delay(0.5, 1.2)
                     password_filled = True
@@ -185,11 +245,10 @@ class CloudConsole:
                 continue
 
     async def _handle_welcome_page(self, page, max_attempts: int = 2) -> bool:
-        """يتعامل مع صفحة Welcome. يرجع True إذا ضغط Accept."""
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # طريقة 1: JS click (أقوى)
+            # طريقة 1: JS click
             try:
                 clicked = await page.evaluate("""
                     () => {
@@ -218,21 +277,16 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"فشل JS click: {e}")
 
-            # طريقة 2: Playwright locators
+            # طريقة 2: locators
             accept_selectors = [
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
                 'button:has-text("Agree")',
-                'a:has-text("Accept")',
-                'a:has-text("Agree")',
-                '[role="button"]:has-text("Accept")',
-                '[role="button"]:has-text("Agree")',
                 'button:has-text("Confirm")',
                 'button:has-text("Got it")',
                 'button:has-text("Continue")',
-                'button:has-text("OK")',
+                'a:has-text("Accept")',
             ]
-
             for sel in accept_selectors:
                 try:
                     el = page.locator(sel).first
@@ -247,7 +301,7 @@ class CloudConsole:
             break
         return False
 
-    async def _wait_for_console(self, page, timeout: int = 90000):
+    async def _wait_for_console(self, page, timeout: int = 60000):
         log.info("انتظار تحميل Cloud Console...")
         try:
             await page.wait_for_function(
