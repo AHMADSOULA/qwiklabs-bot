@@ -54,22 +54,6 @@ class StealthBrowser:
             f"--user-agent={config.USER_AGENT}",
         ]
 
-        # ✅ Proxy configuration
-        proxy = None
-        if config.PROXY_ENABLED and config.PROXY_SERVER:
-            # ⚠️ خاصنا نضيفو http:// إذا ما كانش
-            proxy_server = config.PROXY_SERVER
-            if not proxy_server.startswith(("http://", "https://", "socks5://", "socks4://")):
-                proxy_server = f"http://{proxy_server}"
-
-            proxy = {
-                "server": proxy_server,
-                "username": config.PROXY_USERNAME,
-                "password": config.PROXY_PASSWORD,
-            }
-            log.info(f"🌍 Proxy enabled: {proxy_server}")
-            log.info(f"🌍 Proxy user: {config.PROXY_USERNAME}")
-
         launch_kwargs = {
             "user_data_dir": profile_dir,
             "headless": config.HEADLESS,
@@ -91,8 +75,6 @@ class StealthBrowser:
                 "sec-ch-ua-platform": '"Windows"',
             },
         }
-        if proxy:
-            launch_kwargs["proxy"] = proxy
 
         try:
             launch_kwargs["channel"] = "chrome"
@@ -116,6 +98,7 @@ class StealthBrowser:
             async def apply_stealth(page):
                 try:
                     await stealth_async(page)
+                    log.info(f"✅ stealth applied")
                 except Exception as e:
                     log.warning(f"stealth fail: {e}")
 
@@ -126,19 +109,7 @@ class StealthBrowser:
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
 
-        # ✅ اختبار الـ Proxy
-        if proxy:
-            log.info("🔍 اختبار الـ Proxy...")
-            try:
-                test_page = await self.context.new_page()
-                await test_page.goto("https://api.ipify.org?format=json", wait_until="domcontentloaded", timeout=20000)
-                ip_data = await test_page.inner_text("body")
-                log.info(f"🌍 IP الحالي: {ip_data}")
-                await test_page.close()
-            except Exception as e:
-                log.warning(f"فشل اختبار Proxy: {e}")
-
-        log.info("✅ تم إطلاق المتصفح بنجاح")
+        log.info("✅ تم إطلاق المتصفح المخفي بنجاح")
         return self.context
 
     async def close(self):
