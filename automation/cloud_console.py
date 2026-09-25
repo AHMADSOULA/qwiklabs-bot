@@ -387,7 +387,6 @@ class CloudConsole:
                             tag: el.tagName,
                             text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 80),
                             type: el.type || '',
-                            id: el.id || '',
                             cls: (el.className || '').toString().substring(0, 60),
                             visible: el.offsetParent !== null,
                             disabled: el.disabled || false,
@@ -398,173 +397,147 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"فشل جلب الأزرار: {e}")
 
-            # ✅ 2. JS click — 3 أولويات
+            # ✅ 2. JS multi-click قوي
             try:
                 clicked = await page.evaluate("""
-                    () => {
-                        // الأولوية 1: exact match
-                        const exactTexts = [
-                            'i understand', 'i agree', 'i accept',
-                            'accept', 'agree', 'confirm', 'got it',
-                            'continue', 'ok', 'yes',
-                            'أفهم', 'قبول', 'موافق'
-                        ];
-                        const all = document.querySelectorAll('button, a, [role="button"]');
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                            if (!rawText || rawText.length > 100) continue;
-                            const t = rawText.toLowerCase();
-                            for (const kw of exactTexts) {
-                                if (t === kw) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.click();
-                                    return { clicked: rawText, tag: el.tagName, method: 'exact_match' };
+                    async () => {
+                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+                        function findButton() {
+                            const all = document.querySelectorAll('button, a, [role="button"]');
+                            const exactTexts = ['i understand', 'i agree', 'i accept',
+                                              'accept', 'agree', 'confirm', 'got it',
+                                              'continue', 'ok', 'yes',
+                                              'أفهم', 'قبول', 'موافق'];
+                            for (const el of all) {
+                                if (el.offsetParent === null) continue;
+                                if (el.disabled) continue;
+                                const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                                if (!rawText || rawText.length > 100) continue;
+                                const t = rawText.toLowerCase();
+                                for (const kw of exactTexts) {
+                                    if (t === kw) return el;
                                 }
                             }
-                        }
-
-                        // الأولوية 2: includes
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                            if (!rawText || rawText.length > 100) continue;
-                            const t = rawText.toLowerCase();
-                            if (t.includes('understand') || t.includes('accept') ||
-                                t.includes('agree') || t.includes('continue') ||
-                                t.includes('got it') || t.includes('confirm')) {
-                                el.scrollIntoView({block: 'center'});
-                                el.click();
-                                return { clicked: rawText, tag: el.tagName, method: 'includes' };
+                            for (const el of all) {
+                                if (el.offsetParent === null) continue;
+                                if (el.disabled) continue;
+                                const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                                if (!rawText || rawText.length > 100) continue;
+                                const t = rawText.toLowerCase();
+                                if (t.includes('understand') || t.includes('accept') ||
+                                    t.includes('agree') || t.includes('continue') ||
+                                    t.includes('got it') || t.includes('confirm')) {
+                                    return el;
+                                }
                             }
-                        }
-
-                        // الأولوية 3: submit button
-                        const submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
-                        for (const el of submits) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const rawText = (el.innerText || el.value || '').trim();
-                            if (rawText.length < 100) {
-                                el.scrollIntoView({block: 'center'});
-                                el.click();
-                                return { clicked: rawText || 'submit', tag: el.tagName, method: 'submit_type' };
+                            const submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+                            for (const el of submits) {
+                                if (el.offsetParent === null) continue;
+                                if (el.disabled) continue;
+                                const rawText = (el.innerText || el.value || '').trim();
+                                if (rawText.length < 100) return el;
                             }
+                            return null;
                         }
 
-                        return null;
+                        const btn = findButton();
+                        if (!btn) return { error: 'not_found' };
+
+                        const text = (btn.innerText || btn.value || '').trim();
+
+                        // محاولة 1
+                        btn.scrollIntoView({block: 'center'});
+                        await sleep(300);
+                        btn.click();
+                        await sleep(1000);
+
+                        // محاولة 2
+                        btn.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true, cancelable: true, view: window
+                        }));
+                        await sleep(500);
+
+                        // محاولة 3
+                        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                        btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                        await sleep(500);
+
+                        // محاولة 4
+                        if (btn.parentElement) {
+                            btn.parentElement.dispatchEvent(new MouseEvent('click', {
+                                bubbles: true, cancelable: true, view: window
+                            }));
+                        }
+                        await sleep(500);
+
+                        // محاولة 5
+                        const form = btn.closest('form');
+                        if (form) {
+                            try { form.submit(); } catch(e) {}
+                        }
+
+                        return {
+                            clicked: text,
+                            tag: btn.tagName,
+                            method: 'multi_click',
+                            form: form ? 'yes' : 'no',
+                        };
                     }
                 """)
-                if clicked:
-                    log.info(f"✅ JS click: {clicked}")
-                    await human_delay(5, 8)
-                    return True
+                if clicked and clicked.get("clicked"):
+                    log.info(f"✅ JS multi-click: {clicked}")
+                    await human_delay(6, 10)
+
+                    new_url = page.url.lower()
+                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
+                        log.info(f"🎉 خرجنا من TOS! URL: {page.url}")
+                        return True
+                    else:
+                        log.warning(f"⚠️ مازال فـ TOS")
+                        continue
+                elif clicked and clicked.get("error"):
+                    log.warning(f"⚠️ JS: {clicked['error']}")
             except Exception as e:
                 log.warning(f"JS: {e}")
 
-            # ✅ 3. Playwright locators
-            selectors = [
+            # ✅ 3. Playwright click
+            for sel in [
                 'button:has-text("I understand")',
                 'button:has-text("I agree")',
-                'button:has-text("I accept")',
                 'button:has-text("Accept")',
-                'button:has-text("Agree")',
-                'button:has-text("Confirm")',
-                'button:has-text("Got it")',
-                'button:has-text("Continue")',
-                'button:has-text("OK")',
-                'button:has-text("Yes")',
-                'button:has-text("قبول")',
-                'button:has-text("موافق")',
-                'a:has-text("I understand")',
-                'a:has-text("Accept")',
-                'a:has-text("Agree")',
-                '[role="button"]:has-text("I understand")',
-                '[role="button"]:has-text("Accept")',
-                '[role="button"]:has-text("Agree")',
-                'input[value*="I understand" i]',
-                'input[value*="Accept" i]',
                 'button[type="submit"]',
-                'input[type="submit"]',
-                'button.VfPpkd-LgbsSe[type="submit"]',
                 '.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
-            ]
-            for sel in selectors:
+            ]:
                 try:
-                    els = await page.locator(sel).all()
-                    for el in els:
+                    el = page.locator(sel).first
+                    if await el.count() == 0:
+                        continue
+                    if not await el.is_visible():
+                        continue
+                    if await el.is_disabled():
+                        continue
+
+                    log.info(f"✅ Playwright click: {sel}")
+                    try:
+                        await el.click(timeout=3000)
+                    except Exception:
                         try:
-                            if not await el.is_visible():
-                                continue
-                            if await el.is_disabled():
-                                continue
-                            log.info(f"✅ كليك {sel}")
-                            await el.click(force=True, timeout=5000)
-                            await human_delay(5, 8)
-                            return True
+                            await el.click(force=True, timeout=3000)
                         except Exception:
-                            continue
+                            try:
+                                await el.dispatch_event("click")
+                            except Exception:
+                                pass
+
+                    await human_delay(6, 10)
+                    new_url = page.url.lower()
+                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
+                        log.info(f"🎉 خرجنا من TOS!")
+                        return True
                 except Exception as e:
                     log.warning(f"{sel}: {e}")
                     continue
-
-            # ✅ 4. Blue button (Google)
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, input[type="submit"], a');
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const rawText = (el.innerText || el.value || '').trim();
-                            if (rawText.length > 100) continue;
-                            const bg = window.getComputedStyle(el).backgroundColor;
-                            if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
-                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)' ||
-                                bg === 'rgb(13, 101, 45)' || bg === 'rgb(24, 90, 188)') {
-                                el.scrollIntoView({block: 'center'});
-                                el.click();
-                                return { text: rawText.substring(0, 50), bg: bg };
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ blue button: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            # ✅ 5. آخر زر visible
-            try:
-                result = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, input[type="submit"]');
-                        const visible = Array.from(all).filter(b => 
-                            b.offsetParent !== null && !b.disabled
-                        );
-                        for (let i = visible.length - 1; i >= 0; i--) {
-                            const el = visible[i];
-                            const text = (el.innerText || el.value || '').trim();
-                            if (text.length < 100) {
-                                el.scrollIntoView({block: 'center'});
-                                el.click();
-                                return { clicked: 'last', text: text.substring(0, 80), idx: i };
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if result:
-                    log.info(f"✅ last button: {result}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
 
             log.warning(f"⚠️ ما لقيتش Accept (محاولة {attempt + 1})")
             await human_delay(3, 5)
