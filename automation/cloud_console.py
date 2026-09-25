@@ -60,12 +60,13 @@ class CloudConsole:
                 if await self._is_signin_page(page):
                     log.info("🔑 Sign in")
 
-                    # ✅ نحلل الصفحة أولاً
+                    # نحلل
                     from utils.diagnostic import analyze_page
                     analysis = await analyze_page(page)
-                    log.info(f"📊 تحليل الصفحة: {analysis}")
+                    log.info(f"📊 inputs: {[i.get('name') or i.get('type') for i in analysis.get('inputs', [])]}")
+                    log.info(f"📊 hasEmail: {analysis.get('hasEmail')}, hasPassword: {analysis.get('hasPassword')}, hasCaptcha: {analysis.get('hasCaptcha')}")
 
-                    # ✅ CAPTCHA؟
+                    # CAPTCHA؟
                     if analysis.get("hasCaptcha"):
                         log.info("🚨 CAPTCHA detected")
                         try:
@@ -84,14 +85,13 @@ class CloudConsole:
                         except Exception as e:
                             log.warning(f"CAPTCHA: {e}")
 
-                    # ✅ email + password
+                    # email + password
                     result = await self._do_signin_with_analysis(page, attempt)
                     if result.get("success"):
                         log.info("✅ sign in نجح — نستنى 12s")
                         await human_delay(12, 15)
                         continue
                     else:
-                        # ⚠️ فشل — نوقف
                         log.error(f"❌ sign in فشل: {result.get('reason')}")
                         raise RuntimeError(
                             f"❌ فشل تسجيل الدخول\n\n"
@@ -120,16 +120,75 @@ class CloudConsole:
             await take_screenshot(page, "cc_error")
             raise
 
-    # ==================== Sign In مع تحليل ====================
+    # ==================== الكتابة بـ 3 طرق ====================
+
+    async def _type_in_field(self, el, value: str, field_name: str = "field") -> bool:
+        """
+        يكتب في الحقل بـ 3 طرق + يتحقق من القيمة.
+        """
+        # ✅ الطريقة 1: fill
+        try:
+            await el.click()
+            await human_delay(0.5, 1.0)
+            await el.fill("")
+            await human_delay(0.3, 0.5)
+            await el.fill(value)
+            await human_delay(1, 2)
+
+            val = await el.input_value()
+            log.info(f"  📝 [fill] {field_name}: '{val[:50]}'")
+            if val.strip():
+                log.info(f"  ✅ الطريقة 1 (fill) نجحت")
+                return True
+        except Exception as e:
+            log.warning(f"  ⚠️ fill فشل: {e}")
+
+        # ✅ الطريقة 2: type (keyboard)
+        try:
+            await el.click()
+            await human_delay(0.5, 1.0)
+            # ✅ نمسحو أول
+            await el.press("Control+a")
+            await el.press("Delete")
+            await human_delay(0.3, 0.5)
+            # ✅ نكتبو
+            await el.type(value, delay=80)
+            await human_delay(1, 2)
+
+            val = await el.input_value()
+            log.info(f"  📝 [type] {field_name}: '{val[:50]}'")
+            if val.strip():
+                log.info(f"  ✅ الطريقة 2 (type) نجحت")
+                return True
+        except Exception as e:
+            log.warning(f"  ⚠️ type فشل: {e}")
+
+        # ✅ الطريقة 3: JS
+        try:
+            await el.evaluate("""(el, val) => {
+                el.focus();
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }""", value)
+            await human_delay(1, 2)
+
+            val = await el.input_value()
+            log.info(f"  📝 [JS] {field_name}: '{val[:50]}'")
+            if val.strip():
+                log.info(f"  ✅ الطريقة 3 (JS) نجحت")
+                return True
+        except Exception as e:
+            log.warning(f"  ⚠️ JS فشل: {e}")
+
+        return False
+
+    # ==================== Sign In ====================
 
     async def _do_signin_with_analysis(self, page, attempt: int) -> dict:
-        """
-        تسجيل دخول مع تحليل كامل.
-        يرجع dict: {success, reason, details}
-        """
         await take_screenshot(page, f"cc_before_signin_{attempt}")
 
-        # ✅ نسجل inputs
+        # نسجل inputs
         try:
             inputs = await page.evaluate("""
                 () => {
@@ -142,16 +201,17 @@ class CloudConsole:
                         autocomplete: el.autocomplete || '',
                         visible: el.offsetParent !== null,
                         value: (el.value || '').substring(0, 30),
-                        ariaLabel: el.getAttribute('aria-label') || '',
                     }));
                 }
             """)
-            log.info(f"📋 inputs موجودة: {inputs}")
+            log.info(f"📋 inputs: {inputs}")
         except Exception as e:
-            log.warning(f"فشل جلب inputs: {e}")
+            log.warning(f"فشل: {e}")
             inputs = []
 
-        # ✅ EMAIL
+        # ============================================
+        # ✅ EMAIL — الكتابة بـ 3 طرق
+        # ============================================
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -169,18 +229,12 @@ class CloudConsole:
 
                 log.info(f"✅ لقيت email field: {sel}")
                 await human_delay(1, 2)
-                await el.click()
-                await human_delay(1, 2)
-                await el.fill("")
-                await human_delay(0.5, 1)
-                await el.fill(username := self.username)
-                log.info(f"  ✍️ كتبت: {username}")
-                await human_delay(3, 5)
 
-                val = await el.input_value()
-                log.info(f"  📝 قيمة: '{val}'")
-                if val.strip():
+                # ✅ نكتب بـ 3 طرق
+                ok = await self._type_in_field(el, self.username, "email")
+                if ok:
                     email_filled = True
+                    await human_delay(3, 5)
                     break
             except Exception as e:
                 log.warning(f"فشل {sel}: {e}")
@@ -190,9 +244,17 @@ class CloudConsole:
             await take_screenshot(page, f"cc_email_fail_{attempt}")
             return {
                 "success": False,
-                "reason": "ما لقيتش/قدرتش نكتب الإيميل",
+                "reason": "ما قدرتش نكتب الإيميل بأي طريقة",
                 "details": f"inputs موجودة: {[i['name'] or i['id'] or i['type'] for i in inputs if i['visible']]}",
             }
+
+        # ✅ نتحقق من القيمة النهائية
+        try:
+            el = page.locator('input[type="email"], input[name="identifier"]').first
+            val = await el.input_value()
+            log.info(f"✅ email النهائي: '{val}'")
+        except Exception:
+            pass
 
         # ✅ Next
         log.info("🖱️ نضغط Next (email)")
@@ -202,69 +264,94 @@ class CloudConsole:
         await human_delay(10, 15)
         await take_screenshot(page, f"cc_after_email_next_{attempt}")
 
-        # ✅ نتحقق واش الصفحة تبدلت
+        # ✅ نتحقق من inputs الجديدة
         after_inputs = await page.evaluate("""
             () => {
                 const all = document.querySelectorAll('input');
                 return Array.from(all).map(el => ({
                     type: el.type || '',
                     name: el.name || '',
+                    id: el.id || '',
                     visible: el.offsetParent !== null,
+                    value: (el.value || '').substring(0, 30),
                 }));
             }
         """)
         log.info(f"📋 inputs بعد Next: {after_inputs}")
+
+        # ✅ URL بعد Next
+        log.info(f"🔗 URL بعد Next: {page.url[:150]}")
 
         has_password = any(
             i.get("type") == "password" and i.get("visible")
             for i in after_inputs
         )
 
-        # ✅ إذا ما كاينش password → فشل
+        # ============================================
+        # ✅ إذا ما كاينش password → نتحققو واش رجع Sign in
+        # ============================================
         if not has_password:
-            # ✅ يمكن CAPTCHA
-            try:
-                from automation.captcha_solver import detect_and_solve_captcha
-                solution = await detect_and_solve_captcha(
-                    page,
-                    user_id=self.user_id,
-                    sender=self.sender,
-                    context=None,
+            current_url = page.url.lower()
+
+            # ✅ إذا Google رجع Sign in → email ما تسجلش
+            if "accounts.google.com" in current_url and "signin" in current_url:
+                # ✅ نجربو مرة أخرى — نكتب email من جديد
+                log.warning("⚠️ Google رجع Sign in — نعاود نكتب email")
+
+                # نعاود
+                await human_delay(3, 5)
+                for sel in [
+                    'input[type="email"]',
+                    'input[name="identifier"]',
+                    'input[type="text"]',
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() == 0 or not await el.is_visible():
+                            continue
+                        log.info(f"✅ نعاود نكتب فـ: {sel}")
+                        ok = await self._type_in_field(el, self.username, "email-retry")
+                        if ok:
+                            await human_delay(3, 5)
+                            # Next
+                            await self._click_next_with_logs(page, "email-retry")
+                            await human_delay(10, 15)
+                            await take_screenshot(page, f"cc_retry_after_email_{attempt}")
+                            break
+                    except Exception:
+                        continue
+
+                # نتحقق مرة أخرى
+                after_inputs2 = await page.evaluate("""
+                    () => {
+                        const all = document.querySelectorAll('input');
+                        return Array.from(all).map(el => ({
+                            type: el.type || '',
+                            name: el.name || '',
+                            visible: el.offsetParent !== null,
+                        }));
+                    }
+                """)
+                log.info(f"📋 inputs بعد retry: {after_inputs2}")
+                has_password = any(
+                    i.get("type") == "password" and i.get("visible")
+                    for i in after_inputs2
                 )
-                if solution:
-                    log.info(f"✅ CAPTCHA solved: {solution}")
-                    await self._fill_captcha(page, solution)
-                    await human_delay(10, 15)
-                    await take_screenshot(page, f"cc_after_captcha_{attempt}")
-            except Exception as e:
-                log.warning(f"CAPTCHA: {e}")
 
-            # ✅ نتحقق مرة أخرى
-            after_inputs2 = await page.evaluate("""
-                () => {
-                    const all = document.querySelectorAll('input');
-                    return Array.from(all).map(el => ({
-                        type: el.type || '',
-                        name: el.name || '',
-                        visible: el.offsetParent !== null,
-                    }));
-                }
-            """)
-            log.info(f"📋 inputs بعد CAPTCHA: {after_inputs2}")
-            has_password = any(
-                i.get("type") == "password" and i.get("visible")
-                for i in after_inputs2
-            )
-
+        # ✅ إذا مازال ما كاينش password
         if not has_password:
             await take_screenshot(page, f"cc_no_pwd_field_{attempt}")
             return {
                 "success": False,
                 "reason": "ما لقيتش حقل password بعد email",
-                "details": f"URL: {page.url[:150]}\ninputs: {[i['name'] or i['type'] for i in after_inputs if i['visible']]}",
+                "details": f"URL: {page.url[:150]}\n"
+                          f"inputs: {[i['name'] or i['type'] for i in after_inputs if i['visible']]}\n"
+                          f"التلميح: Google رجع Sign in — يعني email ما تسجلش",
             }
 
+        # ============================================
         # ✅ PASSWORD
+        # ============================================
         log.info("⏳ نستنى 5s قبل password...")
         await human_delay(5, 8)
         await take_screenshot(page, f"cc_before_pwd_{attempt}")
@@ -285,18 +372,12 @@ class CloudConsole:
 
                 log.info(f"✅ لقيت pwd field: {sel}")
                 await human_delay(1, 2)
-                await el.click()
-                await human_delay(1, 2)
-                await el.fill("")
-                await human_delay(0.5, 1)
-                await el.fill(self.password)
-                log.info(f"  ✍️ كتبت كلمة السر")
-                await human_delay(3, 5)
 
-                val = await el.input_value()
-                log.info(f"  📝 طول الحقل: {len(val)}")
-                if val.strip():
+                # ✅ نكتب بـ 3 طرق
+                ok = await self._type_in_field(el, self.password, "password")
+                if ok:
                     password_filled = True
+                    await human_delay(3, 5)
                     break
             except Exception as e:
                 log.warning(f"فشل pwd {sel}: {e}")
@@ -306,7 +387,7 @@ class CloudConsole:
             await take_screenshot(page, f"cc_pwd_fail_{attempt}")
             return {
                 "success": False,
-                "reason": "ما قدرتش نكتب كلمة السر",
+                "reason": "ما قدرتش نكتب كلمة السر بأي طريقة",
                 "details": f"URL: {page.url[:150]}",
             }
 
@@ -322,7 +403,6 @@ class CloudConsole:
         # ✅ نتحقق واش دخلنا
         final_url = page.url.lower()
         if "accounts.google.com" in final_url:
-            # مازال فـ Sign in
             await take_screenshot(page, f"cc_still_signin_{attempt}")
             return {
                 "success": False,
@@ -355,27 +435,10 @@ class CloudConsole:
                 continue
         return False
 
-    # ==================== Welcome Hard Click ====================
+    # ==================== Welcome ====================
 
     async def _handle_welcome_hard(self, page) -> bool:
         await human_delay(3, 5)
-
-        try:
-            buttons = await page.evaluate("""
-                () => {
-                    const all = document.querySelectorAll('button, a, [role="button"]');
-                    return Array.from(all).map((el, i) => ({
-                        idx: i,
-                        tag: el.tagName,
-                        text: (el.innerText || el.value || '').trim().substring(0, 60),
-                        visible: el.offsetParent !== null,
-                        disabled: el.disabled || false,
-                    })).filter(b => b.visible && !b.disabled && b.text);
-                }
-            """)
-            log.info(f"🔍 الأزرار: {buttons}")
-        except Exception:
-            pass
 
         try:
             clicked = await page.evaluate("""
@@ -424,8 +487,6 @@ class CloudConsole:
             'button:has-text("Accept")',
             'button:has-text("I understand")',
             'button:has-text("I agree")',
-            'button:has-text("Agree")',
-            'button:has-text("Continue")',
             'button[type="submit"]',
         ]:
             try:
@@ -522,8 +583,6 @@ class CloudConsole:
             except Exception:
                 pass
         return False
-
-    # ==================== CAPTCHA Fill ====================
 
     async def _fill_captcha(self, page, solution: str):
         for sel in [
