@@ -13,6 +13,8 @@ class CloudConsole:
         self.password = None
         self.user_id = None
         self.sender = None
+        # ✅ flag: واش ضغطنا على Accept من قبل
+        self.tos_clicked = False
 
     async def login(self, username: str, password: str,
                     user_id: int = None, sender=None, context=None):
@@ -43,15 +45,37 @@ class CloudConsole:
 
             # 2. Welcome / TOS / Speedbump?
             if await self._is_welcome_page(page):
-                log.info("📋 Welcome/TOS/Speedbump — نحاول Accept")
-                clicked = await self._handle_welcome_page(page)
-                if clicked:
-                    await human_delay(5, 8)
-                    continue
+                log.info("📋 Welcome/TOS/Speedbump")
+
+                # ✅ إذا ضغطنا قبل، ما نعاودوش — غير نستنى
+                if self.tos_clicked:
+                    log.info("⏳ ضغطنا قبل على Accept — نستنى Google تكمل...")
+                    await human_delay(10, 15)
+
+                    # نتحققو واش خرجنا
+                    new_url = page.url.lower()
+                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
+                        log.info("🎉 خرجنا من TOS بعد الانتظار!")
+                        self.tos_clicked = False
+                        continue
+                    else:
+                        log.warning("⚠️ مازال فـ TOS — Google ما سجلتش")
+                        # استنى أكثر
+                        await human_delay(10, 15)
+                        continue
                 else:
-                    log.warning("⚠️ ما لقيتش Accept — نستنى ونعاود")
-                    await human_delay(4, 6)
-                    continue
+                    # ✅ أول مرة: نضغطو مرة وحدة
+                    log.info("🖱️ نضغط على Accept مرة وحدة فقط...")
+                    clicked = await self._handle_welcome_page_once(page)
+                    if clicked:
+                        self.tos_clicked = True
+                        log.info("✅ ضغطنا — نستنى Google تكمل...")
+                        await human_delay(10, 15)
+                        continue
+                    else:
+                        log.warning("⚠️ ما لقيتش Accept")
+                        await human_delay(5, 8)
+                        continue
 
             # 3. Sign in?
             if await self._is_signin_page(page):
@@ -99,7 +123,7 @@ class CloudConsole:
 
             # 6. صفحة غير معروفة
             log.warning(f"❓ صفحة غير معروفة: {current_url[:100]}")
-            await human_delay(4, 6)
+            await human_delay(5, 8)
 
         await take_screenshot(page, "cc_final_fail")
         raise RuntimeError(f"❌ فشل بعد 8 محاولات\nURL: {page.url[:200]}")
@@ -107,7 +131,6 @@ class CloudConsole:
     # ==================== CAPTCHA ====================
 
     async def _fill_captcha(self, page, solution: str):
-        """يكتب الحل فـ حقل CAPTCHA"""
         for sel in [
             'input[name="ca"]',
             'input[id="ca"]',
@@ -136,7 +159,6 @@ class CloudConsole:
                 val = await inp.input_value()
                 if val.strip():
                     log.info(f"✍️ كتبت: {val}")
-
                     for btn_sel in [
                         '#captchaNext',
                         'button:has-text("Next")',
@@ -184,9 +206,6 @@ class CloudConsole:
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
                 'button:has-text("Agree")',
-                'button:has-text("Confirm")',
-                'button:has-text("Got it")',
-                'button:has-text("Continue")',
             ]:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
@@ -264,7 +283,6 @@ class CloudConsole:
                 if val.strip():
                     email_filled = True
                     break
-
                 await el.click()
                 await page.keyboard.type(username, delay=50)
                 await human_delay(0.3, 0.8)
@@ -283,7 +301,7 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # CAPTCHA بعد email
+        # CAPTCHA
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             await human_delay(1, 2)
@@ -325,7 +343,6 @@ class CloudConsole:
                 if val.strip():
                     password_filled = True
                     break
-
                 await el.click()
                 await page.keyboard.type(password, delay=50)
                 await human_delay(0.3, 0.8)
@@ -365,183 +382,111 @@ class CloudConsole:
             except Exception:
                 continue
 
-    # ==================== Welcome (محسّن) ====================
+    # ==================== Welcome — مرة وحدة ====================
 
-    async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
+    async def _handle_welcome_page_once(self, page) -> bool:
         """
-        يحاول يضغط على زر Accept بكل الطرق.
-        خاص لصفحة speedbump/workspacetermsofservice (Qwiklabs).
+        يضغط على "I understand" مرة وحدة فقط.
         """
-        for attempt in range(max_attempts):
-            await human_delay(3, 5)
+        await human_delay(3, 5)
 
-            # ✅ 1. تسجيل الأزرار
-            try:
-                buttons_info = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll(
-                            'button, a, [role="button"], input[type="submit"], input[type="button"]'
-                        );
-                        return Array.from(all).map((el, i) => ({
-                            idx: i,
-                            tag: el.tagName,
-                            text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 80),
-                            type: el.type || '',
-                            cls: (el.className || '').toString().substring(0, 60),
-                            visible: el.offsetParent !== null,
-                            disabled: el.disabled || false,
-                        }));
+        # ✅ 1. نسجل الأزرار
+        try:
+            buttons_info = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll(
+                        'button, a, [role="button"], input[type="submit"], input[type="button"]'
+                    );
+                    return Array.from(all).map((el, i) => ({
+                        idx: i,
+                        tag: el.tagName,
+                        text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 80),
+                        visible: el.offsetParent !== null,
+                        disabled: el.disabled || false,
+                    }));
+                }
+            """)
+            log.info(f"🔍 الأزرار: {buttons_info}")
+        except Exception as e:
+            log.warning(f"فشل جلب الأزرار: {e}")
+
+        # ✅ 2. ضغطة وحدة فقط
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const exactTexts = ['i understand', 'i agree', 'i accept',
+                                      'accept', 'agree', 'confirm', 'got it',
+                                      'continue', 'ok', 'yes',
+                                      'أفهم', 'قبول', 'موافق'];
+                    const all = document.querySelectorAll('button, a, [role="button"]');
+
+                    // الأولوية 1: exact match
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                        if (!rawText || rawText.length > 100) continue;
+                        const t = rawText.toLowerCase();
+                        for (const kw of exactTexts) {
+                            if (t === kw) {
+                                el.scrollIntoView({block: 'center'});
+                                el.focus();
+                                el.click();
+                                return { clicked: rawText, tag: el.tagName, method: 'exact_once' };
+                            }
+                        }
                     }
-                """)
-                log.info(f"🔍 الأزرار: {buttons_info}")
-            except Exception as e:
-                log.warning(f"فشل جلب الأزرار: {e}")
 
-            # ✅ 2. JS multi-click قوي
-            try:
-                clicked = await page.evaluate("""
-                    async () => {
-                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-                        function findButton() {
-                            const all = document.querySelectorAll('button, a, [role="button"]');
-                            const exactTexts = ['i understand', 'i agree', 'i accept',
-                                              'accept', 'agree', 'confirm', 'got it',
-                                              'continue', 'ok', 'yes',
-                                              'أفهم', 'قبول', 'موافق'];
-                            for (const el of all) {
-                                if (el.offsetParent === null) continue;
-                                if (el.disabled) continue;
-                                const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                                if (!rawText || rawText.length > 100) continue;
-                                const t = rawText.toLowerCase();
-                                for (const kw of exactTexts) {
-                                    if (t === kw) return el;
-                                }
-                            }
-                            for (const el of all) {
-                                if (el.offsetParent === null) continue;
-                                if (el.disabled) continue;
-                                const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                                if (!rawText || rawText.length > 100) continue;
-                                const t = rawText.toLowerCase();
-                                if (t.includes('understand') || t.includes('accept') ||
-                                    t.includes('agree') || t.includes('continue') ||
-                                    t.includes('got it') || t.includes('confirm')) {
-                                    return el;
-                                }
-                            }
-                            const submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
-                            for (const el of submits) {
-                                if (el.offsetParent === null) continue;
-                                if (el.disabled) continue;
-                                const rawText = (el.innerText || el.value || '').trim();
-                                if (rawText.length < 100) return el;
-                            }
-                            return null;
+                    // الأولوية 2: includes
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                        if (!rawText || rawText.length > 100) continue;
+                        const t = rawText.toLowerCase();
+                        if (t.includes('understand') || t.includes('accept') ||
+                            t.includes('agree') || t.includes('continue') ||
+                            t.includes('got it') || t.includes('confirm')) {
+                            el.scrollIntoView({block: 'center'});
+                            el.focus();
+                            el.click();
+                            return { clicked: rawText, tag: el.tagName, method: 'includes_once' };
                         }
-
-                        const btn = findButton();
-                        if (!btn) return { error: 'not_found' };
-
-                        const text = (btn.innerText || btn.value || '').trim();
-
-                        // محاولة 1
-                        btn.scrollIntoView({block: 'center'});
-                        await sleep(300);
-                        btn.click();
-                        await sleep(1000);
-
-                        // محاولة 2
-                        btn.dispatchEvent(new MouseEvent('click', {
-                            bubbles: true, cancelable: true, view: window
-                        }));
-                        await sleep(500);
-
-                        // محاولة 3
-                        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-                        btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-                        await sleep(500);
-
-                        // محاولة 4
-                        if (btn.parentElement) {
-                            btn.parentElement.dispatchEvent(new MouseEvent('click', {
-                                bubbles: true, cancelable: true, view: window
-                            }));
-                        }
-                        await sleep(500);
-
-                        // محاولة 5
-                        const form = btn.closest('form');
-                        if (form) {
-                            try { form.submit(); } catch(e) {}
-                        }
-
-                        return {
-                            clicked: text,
-                            tag: btn.tagName,
-                            method: 'multi_click',
-                            form: form ? 'yes' : 'no',
-                        };
                     }
-                """)
-                if clicked and clicked.get("clicked"):
-                    log.info(f"✅ JS multi-click: {clicked}")
-                    await human_delay(6, 10)
 
-                    new_url = page.url.lower()
-                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
-                        log.info(f"🎉 خرجنا من TOS! URL: {page.url}")
-                        return True
-                    else:
-                        log.warning(f"⚠️ مازال فـ TOS")
-                        continue
-                elif clicked and clicked.get("error"):
-                    log.warning(f"⚠️ JS: {clicked['error']}")
-            except Exception as e:
-                log.warning(f"JS: {e}")
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ كليك مرة وحدة: {clicked}")
+                return True
+        except Exception as e:
+            log.warning(f"JS: {e}")
 
-            # ✅ 3. Playwright click
-            for sel in [
-                'button:has-text("I understand")',
-                'button:has-text("I agree")',
-                'button:has-text("Accept")',
-                'button[type="submit"]',
-                '.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() == 0:
-                        continue
-                    if not await el.is_visible():
-                        continue
-                    if await el.is_disabled():
-                        continue
-
-                    log.info(f"✅ Playwright click: {sel}")
-                    try:
-                        await el.click(timeout=3000)
-                    except Exception:
-                        try:
-                            await el.click(force=True, timeout=3000)
-                        except Exception:
-                            try:
-                                await el.dispatch_event("click")
-                            except Exception:
-                                pass
-
-                    await human_delay(6, 10)
-                    new_url = page.url.lower()
-                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
-                        log.info(f"🎉 خرجنا من TOS!")
-                        return True
-                except Exception as e:
-                    log.warning(f"{sel}: {e}")
+        # ✅ 3. Playwright — مرة وحدة
+        for sel in [
+            'button:has-text("I understand")',
+            'button:has-text("I agree")',
+            'button:has-text("Accept")',
+            'button[type="submit"]',
+            '.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0:
                     continue
+                if not await el.is_visible():
+                    continue
+                if await el.is_disabled():
+                    continue
+                log.info(f"✅ Playwright click مرة وحدة: {sel}")
+                await el.click(timeout=5000)
+                return True
+            except Exception as e:
+                log.warning(f"{sel}: {e}")
+                continue
 
-            log.warning(f"⚠️ ما لقيتش Accept (محاولة {attempt + 1})")
-            await human_delay(3, 5)
-
+        log.warning("⚠️ ما لقيتش زر Accept")
         return False
 
     # ==================== Console Ready ====================
