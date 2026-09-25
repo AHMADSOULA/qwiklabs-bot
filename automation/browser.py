@@ -30,7 +30,7 @@ class StealthBrowser:
             os.path.join(profile_dir, "Default", "Cookies")
         )
         if session_exists:
-            log.info("✅ وجدت Chrome Profile محفوظ")
+            log.info("✅ Chrome Profile محفوظ")
         else:
             log.info("🆕 Chrome Profile جديد")
 
@@ -49,7 +49,6 @@ class StealthBrowser:
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
-            "--disable-ipc-flooding-protection",
             "--window-size=1920,1080",
             f"--user-agent={config.USER_AGENT}",
         ]
@@ -84,21 +83,15 @@ class StealthBrowser:
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
-        # ✅ حقن STEALTH_JS
         await self.context.add_init_script(STEALTH_JS)
+        await self.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
 
-        # ✅ إخفاء webdriver
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            delete Object.getPrototypeOf(navigator).webdriver;
-        """)
-
-        # ✅ playwright-stealth
         if HAS_STEALTH:
             async def apply_stealth(page):
                 try:
                     await stealth_async(page)
-                    log.info(f"✅ stealth applied")
                 except Exception as e:
                     log.warning(f"stealth fail: {e}")
 
@@ -109,21 +102,19 @@ class StealthBrowser:
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
 
-        log.info("✅ تم إطلاق المتصفح المخفي بنجاح")
+        log.info("✅ تم إطلاق المتصفح المخفي")
         return self.context
 
     async def close(self):
         if self.context:
             try:
                 cookies = await self.context.cookies()
-                profile_dir = config.CHROME_PROFILE_DIR
-                cookies_file = os.path.join(profile_dir, "cookies_backup.json")
+                cookies_file = os.path.join(config.CHROME_PROFILE_DIR, "cookies_backup.json")
                 with open(cookies_file, "w") as f:
                     json.dump(cookies, f)
                 log.info(f"✅ حفظت {len(cookies)} cookies")
             except Exception as e:
                 log.warning(f"فشل حفظ cookies: {e}")
-
             await self.context.close()
         if self.playwright:
             await self.playwright.stop()
