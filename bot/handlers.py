@@ -1,5 +1,6 @@
 import asyncio
-from telegram import Update
+import re
+from telegram import Update, InputFile
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
@@ -8,12 +9,25 @@ from bot.keyboards import main_menu
 from database import db
 from utils.helpers import extract_urls
 from utils.logger import get_logger
+from utils.screenshot import take_screenshot
+from utils.diagnostic import (
+    start_report, get_report, send_diagnostic, get_system_info,
+    analyze_page, diagnose,
+)
 from automation.browser import StealthBrowser
 from automation.qwiklabs import QwikLabsSession
 from automation.cloud_console import CloudConsole
 
 log = get_logger("Handlers")
 job_lock = asyncio.Lock()
+
+# ⚙️ إعدادات ثابتة
+IMAGE = "docker.io/ajndjd2/ahmed-vip1"
+SERVICE = "ahmed-vip1"
+REGION = "us-central1"
+MEMORY = "2Gi"
+CPU = "2"
+PORT = 8080
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -32,14 +46,12 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     jobs = await db.get_user_jobs(user.id, limit=5)
     if not jobs:
-        await update.message.reply_text("📭 لا توجد مهام سابقة.")
+        await update.message.reply_text("📭 لا توجد مهام.")
         return
     lines = []
     for jid, status, created in jobs:
-        emoji = {"pending": "⏳", "done": "✅", "failed": "❌"}.get(status, "❔")
-        lines.append(messages.JOB_LINE.format(
-            id=jid, status_emoji=emoji, status=status, date=created
-        ))
+        emoji = {"pending": "⏳", "done": "✅", "failed": "❌", "waiting_password": "🔑"}.get(status, "❔")
+        lines.append(messages.JOB_LINE.format(id=jid, status_emoji=emoji, status=status, date=created))
     await update.message.reply_text(
         messages.STATUS_TEMPLATE.format(count=len(jobs), jobs="\n".join(lines)),
         parse_mode=ParseMode.MARKDOWN,
@@ -47,7 +59,35 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    try:
+        from automation.captcha_solver import cancel_captcha
+        cancel_captcha(user.id)
+    except Exception:
+        pass
+    await db.clear_session(user.id)
+    b = context.bot_data.pop(f"browser_{user.id}", None)
+    context.bot_data.pop(f"page_{user.id}", None)
+    context.bot_data.pop(f"ctx_{user.id}", None)
+    if b:
+        try:
+            await b.close()
+        except Exception:
+            pass
     await update.message.reply_text("🚫 تم الإلغاء.")
+
+
+async def send_photo(msg, path, caption=""):
+    try:
+        if not path:
+            return
+        import os
+        if not os.path.exists(path):
+            return
+        with open(path, "rb") as f:
+            await msg.reply_photo(photo=InputFile(f), caption=caption[:1000])
+    except Exception:
+        pass
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,40 +99,248 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sso_url = urls[0]
     user = update.effective_user
     if "skills.google" not in sso_url and "qwiklabs" not in sso_url:
-        await update.message.reply_text("⚠️ الرابط لا يبدو من Google Skills.")
+        await update.message.reply_text("⚠️ الرابط ماشي من Google Skills.")
         return
+
+    existing = await db.get_session(user.id)
+    if existing:
+        await update.message.reply_text("⚠️ عندك مهمة. أرسل `/cancel`.", parse_mode=ParseMode.MARKDOWN)
+        return
+
     job_id = await db.add_job(user.id, sso_url)
+    await db.set_session(user_id=user.id, job_id=job_id, sso_url=sso_url, state="opening_sso")
+
+    report = start_report(job_id, user.id)
+    report.add_step("استلام SSO", "✅", sso_url[:100])
+    for k, v in get_system_info().items():
+        report.set_metadata(k, v)
+
     msg = await update.message.reply_text(
-        f"📥 تم استلام المهمة `#{job_id}`\n\n{messages.PROCESSING}",
-        parse_mode=ParseMode.MARKDOWN,
+        f"📥 المهمة `#{job_id}`\n\n🔹 فتح SSO...", parse_mode=ParseMode.MARKDOWN
     )
-    asyncio.create_task(run_job(job_id, sso_url, msg))
+    asyncio.create_task(run_step1(job_id, sso_url, msg, user.id, context))
 
 
-async def run_job(job_id, sso_url, msg):
+async def run_step1(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
+        report = get_report(job_id)
         try:
             await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...", parse_mode=ParseMode.MARKDOWN)
+            report.add_step("إطلاق المتصفح", "ℹ️", "بدء")
             ctx = await browser.start()
+            report.add_step("إطلاق المتصفح", "✅", "نجح")
+
+            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 فتح SSO...", parse_mode=ParseMode.MARKDOWN)
             ql = QwikLabsSession(ctx)
             page = await ql.open_sso(sso_url)
+
+            shot = await take_screenshot(page, "sso")
+            if shot:
+                report.add_screenshot(shot, "بعد SSO")
+                await send_photo(msg, shot, "📸 بعد SSO")
+
             await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 استخراج البيانات...", parse_mode=ParseMode.MARKDOWN)
-            username, password = await ql.extract_credentials(page)
+            email, password = await ql.extract_credentials(page)
+            report.add_step("استخراج credentials", "✅", f"email: {email}, pass: {'✅' if password else '❌'}")
+
+            shot = await take_screenshot(page, "credentials")
+            if shot:
+                report.add_screenshot(shot, f"credentials: {email}")
+
+            context.bot_data[f"page_{user_id}"] = page
+            context.bot_data[f"browser_{user_id}"] = browser
+            context.bot_data[f"ctx_{user_id}"] = ctx
+
+            await db.set_session(
+                user_id=user_id, username=email, password=password,
+                state="waiting_password" if not password else "ready"
+            )
+
+            if password:
+                await msg.edit_text(
+                    f"✅ *#{job_id}*\n\n👤 `{email}`\n🔑 password موجود\n🚀 نشر...",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                asyncio.create_task(run_step2(job_id, email, password, msg, user.id, context))
+            else:
+                await msg.edit_text(
+                    f"✅ *#{job_id}*\n\n👤 `{email}`\n\n🔑 *أرسل كلمة السر:*",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+        except Exception as e:
+            log.exception("SSO فشل")
+            if report:
+                report.add_error(e, "SSO")
+                try:
+                    analysis = await analyze_page(page)
+                    report.add_analysis(analysis)
+                    report.add_diagnosis(diagnose(analysis, str(e)))
+                except Exception:
+                    pass
+            await db.update_job(job_id, "failed", str(e))
+            await db.clear_session(user_id)
+            await msg.edit_text(f"❌ *#{job_id}* — فشل\n📊 التقرير...", parse_mode=ParseMode.MARKDOWN)
+            await send_diagnostic(msg, job_id, str(e))
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
+async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = (update.message.text or "").strip()
+
+    session = await db.get_session(user.id)
+    if not session or session.get("state") != "waiting_password":
+        return
+
+    job_id = session["job_id"]
+    email = session["username"]
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await db.set_session(user_id=user.id, password=text, state="ready")
+
+    report = get_report(job_id)
+    if report:
+        report.add_step("استقبال password", "✅", "من المستخدم")
+
+    msg = await update.message.reply_text(f"✅ استلمنا password\n\n🚀 نشر...", parse_mode=ParseMode.MARKDOWN)
+    asyncio.create_task(run_step2(job_id, email, text, msg, user.id, context))
+
+
+async def run_step2(job_id, username, password, msg, user_id, context):
+    async with job_lock:
+        report = get_report(job_id)
+        try:
+            page = context.bot_data.get(f"page_{user_id}")
+            if not page:
+                raise RuntimeError("الجلسة انتهت")
+
             await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...", parse_mode=ParseMode.MARKDOWN)
-            cc = CloudConsole(ctx)
-            console_page = await cc.login(username, password)
-            await db.update_job(job_id, "done", f"logged_in:{username}")
+            report.add_step("تسجيل الدخول", "ℹ️", "بدء")
+
+            cc = CloudConsole(page.context)
+            console_page = await cc.login(username, password, user_id=user_id, sender=msg)
+
+            shot = await take_screenshot(console_page, "after_login")
+            if shot:
+                report.add_screenshot(shot, "بعد تسجيل الدخول")
+                await send_photo(msg, shot, "📸 بعد تسجيل الدخول")
+
+            report.add_step("تسجيل الدخول", "✅", f"URL: {console_page.url[:150]}")
+            await asyncio.sleep(3)
+
+            # project_id
+            session = await db.get_session(user_id)
+            project_id = await get_project_id(console_page, session.get("sso_url", ""))
+            if not project_id:
+                raise RuntimeError(f"تعذر project_id\nURL: {console_page.url[:200]}")
+            report.add_step("project_id", "✅", project_id)
+
+            await msg.edit_text(f"🚀 *#{job_id}*\n\n📦 `{project_id}`\n🔹 access token...", parse_mode=ParseMode.MARKDOWN)
+
+            from automation.cloudrun_deployer import CloudRunDeployer, extract_access_token
+            token = await extract_access_token(console_page)
+            report.add_step("access token", "✅", f"طول: {len(token)}")
+
             await msg.edit_text(
-                f"✅ *#{job_id}*\n\n👤 `{username}`\n\n🔗 {console_page.url}",
+                f"🚀 *#{job_id}*\n\n🔹 نشر `{SERVICE}`\n🐳 `{IMAGE}`\n⏳ 1-3 دقائق",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            report.add_step("Cloud Run deploy", "ℹ️", "بدء")
+
+            deployer = CloudRunDeployer(token, project_id, REGION)
+            url = await deployer.deploy(SERVICE, IMAGE, MEMORY, CPU, PORT)
+            report.add_step("Cloud Run deploy", "✅", url)
+
+            try:
+                await console_page.goto(
+                    f"https://console.cloud.google.com/run/detail/{REGION}/{SERVICE}?project={project_id}",
+                    wait_until="domcontentloaded"
+                )
+                await asyncio.sleep(3)
+                shot = await take_screenshot(console_page, "deployed")
+                if shot:
+                    report.add_screenshot(shot, "بعد النشر")
+                    await send_photo(msg, shot, "📸 Cloud Run")
+            except Exception:
+                pass
+
+            await db.update_job(job_id, "done", url)
+            await db.clear_session(user_id)
+
+            await msg.edit_text(
+                f"✅ *#{job_id}* — تم النشر!\n\n🔗 *الرابط:*\n{url}\n\n📦 `{SERVICE}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
-            log.exception("فشل تنفيذ المهمة")
+            log.exception("نشر فشل")
+            if report:
+                report.add_error(e, "نشر")
+                try:
+                    if 'console_page' in locals():
+                        analysis = await analyze_page(console_page)
+                        report.add_analysis(analysis)
+                        report.add_diagnosis(diagnose(analysis, str(e)))
+                except Exception:
+                    pass
             await db.update_job(job_id, "failed", str(e))
-            await msg.edit_text(messages.FAILED.format(error=str(e)[:300]), parse_mode=ParseMode.MARKDOWN)
+            await db.clear_session(user_id)
+            await msg.edit_text(f"❌ *#{job_id}* — فشل\n📊 التقرير...", parse_mode=ParseMode.MARKDOWN)
+            await send_diagnostic(msg, job_id, str(e))
         finally:
-            await browser.close()
+            try:
+                pg = context.bot_data.pop(f"page_{user_id}", None)
+                if pg:
+                    await pg.close()
+            except Exception:
+                pass
+            b = context.bot_data.pop(f"browser_{user_id}", None)
+            context.bot_data.pop(f"ctx_{user_id}", None)
+            if b:
+                try:
+                    await b.close()
+                except Exception:
+                    pass
+
+
+async def get_project_id(page, sso_url: str = "") -> str:
+    # من URL الحالي
+    m = re.search(r'project=([a-z0-9\-]+)', page.url)
+    if m:
+        return m.group(1)
+    # من SSO
+    if sso_url:
+        m = re.search(r'project%3D([a-z0-9\-]+)', sso_url)
+        if not m:
+            m = re.search(r'project=([a-z0-9\-]+)', sso_url)
+        if not m:
+            m = re.search(r'(qwiklabs-gcp-[a-z0-9\-]+)', sso_url)
+        if m:
+            return m.group(1)
+    # من API
+    try:
+        pid = await page.evaluate("""
+            async () => {
+                try {
+                    const r = await fetch('https://cloudresourcemanager.googleapis.com/v1/projects', {credentials: 'include'});
+                    const d = await r.json();
+                    if (d.projects && d.projects.length > 0) return d.projects[0].projectId;
+                } catch(e) {}
+                return null;
+            }
+        """)
+        if pid:
+            return pid
+    except Exception:
+        pass
+    return None
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
