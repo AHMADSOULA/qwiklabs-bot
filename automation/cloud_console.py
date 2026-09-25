@@ -47,26 +47,33 @@ class CloudConsole:
                 await self._send_shot(page, "📋 صفحة Terms of Service")
 
                 url_before = page.url
-                handled = await self._handle_speedbump(page, url_before)
 
-                if handled:
-                    log.info("✅ ضغط Accept — ننتظر تغيير الصفحة...")
-                    changed = await self._wait_for_url_change(page, url_before, timeout=15)
-                    if changed:
-                        log.info("🎉 الصفحة تبدلت!")
-                        await self._send_shot(page, "🎉 خرجنا من TOS")
-                        await human_delay(8, 12)
-                        continue
-                    else:
-                        log.warning("⚠️ الصفحة ما تبدلتش — نعاودو")
-                        await self._send_shot(page, "⚠️ ما تبدلش — نعاود")
-                        await human_delay(3, 5)
-                        continue
+                # ✅ نبحث عن الزر الأزرق ونرسل اسمه
+                button_info = await self._find_blue_button_info(page)
+
+                if button_info:
+                    # ✅ نرسل اسم الزر فـ البوت
+                    await self._notify_button(page, button_info)
+
+                    # ✅ نضغط عليه
+                    clicked = await self._click_button(page, button_info)
+                    if clicked:
+                        log.info("✅ ضغطنا — ننتظر")
+                        changed = await self._wait_for_url_change(page, url_before, timeout=15)
+                        if changed:
+                            log.info("🎉 خرجنا من TOS")
+                            await self._send_shot(page, "🎉 خرجنا من TOS")
+                            await human_delay(8, 12)
+                            continue
+                        else:
+                            log.warning("⚠️ ما تبدلش — نستنى")
+                            await human_delay(5, 8)
+                            continue
                 else:
                     await self._raise_problem(
                         page,
-                        "🔴 ما لقيناش زر Accept",
-                        "الصفحة فيها TOS ولكن ما لقيناش زر"
+                        "🔴 ما لقيناش زر أزرق",
+                        "الصفحة فيها TOS ولكن ما لقيناش زر أزرق"
                     )
 
             # ✅ 3. CAPTCHA
@@ -75,10 +82,8 @@ class CloudConsole:
                 if await has_captcha(page):
                     log.info("🚨 CAPTCHA")
                     await self._send_shot(page, "🚨 CAPTCHA")
-
                     if self.captcha_count >= 3:
                         await self._raise_problem(page, "🔴 CAPTCHA متكررة", "3 مرات")
-
                     solution = await detect_and_solve_captcha(
                         page, user_id=self.user_id, sender=self.sender
                     )
@@ -122,19 +127,254 @@ class CloudConsole:
 
         await self._raise_problem(page, "🔴 فشل بعد 12 خطوة", f"URL: {page.url[:200]}")
 
+    # ==================== Find Blue Button Info ====================
+
+    async def _find_blue_button_info(self, page) -> dict:
+        """
+        يبحث عن الزر الأزرق ويرجع معلوماتو الكاملة.
+        """
+        log.info("🔍 نبحث عن الزر الأزرق...")
+
+        try:
+            info = await page.evaluate("""
+                () => {
+                    const result = {
+                        all_buttons: [],
+                        blue_buttons: [],
+                    };
+
+                    // ✅ كل الأزرار القابلة للنقر
+                    const all = document.querySelectorAll(
+                        'button, a, input[type="submit"], input[type="button"], [role="button"]'
+                    );
+
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+
+                        const rect = el.getBoundingClientRect();
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        const text = (el.innerText || el.value || el.textContent || '').trim();
+
+                        const btn = {
+                            text: text.substring(0, 100),
+                            tag: el.tagName,
+                            type: el.type || '',
+                            bg: bg,
+                            x: rect.x + rect.width / 2,
+                            y: rect.y + rect.height / 2,
+                            w: rect.width,
+                            h: rect.height,
+                            disabled: el.disabled || false,
+                            visible: rect.width > 0 && rect.height > 0,
+                            id: el.id || '',
+                            cls: (el.className || '').toString().substring(0, 80),
+                        };
+
+                        result.all_buttons.push(btn);
+
+                        // ✅ الزر الأزرق (Google Material)
+                        const is_blue = (
+                            bg === 'rgb(26, 115, 232)' ||
+                            bg === 'rgb(66, 133, 244)' ||
+                            bg === 'rgb(23, 78, 166)' ||
+                            bg === 'rgb(21, 101, 192)' ||
+                            bg === 'rgb(13, 101, 45)' ||
+                            bg === 'rgb(24, 90, 188)' ||
+                            bg === 'rgb(0, 123, 255)' ||
+                            bg.includes('26, 115') ||
+                            bg.includes('66, 133')
+                        );
+
+                        if (is_blue && !el.disabled && rect.width > 0) {
+                            result.blue_buttons.push(btn);
+                        }
+                    }
+
+                    return result;
+                }
+            """)
+
+            log.info(f"📋 كل الأزرار: {info.get('all_buttons', [])}")
+            log.info(f"🔵 الأزرار الزرقاء: {info.get('blue_buttons', [])}")
+
+            # ✅ نرجع أفضل زر أزرق
+            blue = info.get("blue_buttons", [])
+            if blue:
+                # ✅ نختار الزر اللي فيه نص
+                with_text = [b for b in blue if b.get("text")]
+                if with_text:
+                    return {
+                        "button": with_text[0],
+                        "all_buttons": info.get("all_buttons", []),
+                        "all_blue": blue,
+                        "source": "blue_with_text",
+                    }
+                return {
+                    "button": blue[0],
+                    "all_buttons": info.get("all_buttons", []),
+                    "all_blue": blue,
+                    "source": "blue_no_text",
+                }
+
+            return {
+                "button": None,
+                "all_buttons": info.get("all_buttons", []),
+                "all_blue": [],
+                "source": "no_blue",
+            }
+        except Exception as e:
+            log.warning(f"فشل: {e}")
+            return {"button": None, "all_buttons": [], "all_blue": [], "source": f"error: {e}"}
+
+    # ==================== Notify Button Info ====================
+
+    async def _notify_button(self, page, info: dict):
+        """
+        يرسل معلومات الزر فـ Telegram + يسجلها فـ Logs.
+        """
+        btn = info.get("button")
+        source = info.get("source", "")
+        all_buttons = info.get("all_buttons", [])
+
+        # ✅ نسجل فـ Logs
+        log.info(f"🔵 معلومات الزر الأزرق (source: {source}):")
+        if btn:
+            log.info(f"   • النص: '{btn.get('text', '')}'")
+            log.info(f"   • Tag: {btn.get('tag', '')}")
+            log.info(f"   • Type: {btn.get('type', '')}")
+            log.info(f"   • bg: {btn.get('bg', '')}")
+            log.info(f"   • id: {btn.get('id', '')}")
+            log.info(f"   • cls: {btn.get('cls', '')}")
+            log.info(f"   • الإحداثيات: ({btn.get('x', 0)}, {btn.get('y', 0)})")
+            log.info(f"   • الحجم: {btn.get('w', 0)} x {btn.get('h', 0)}")
+
+        # ✅ نرسل فـ Telegram
+        if not self.sender:
+            return
+
+        msg = f"""🔵 *الزر الأزرق*
+
+🎯 *المصدر:* `{source}`
+
+"""
+        if btn:
+            msg += f"""📝 *النص:*
+`{btn.get('text', '(فارغ)')}`
+
+🏷️ *Tag:* `{btn.get('tag', '')}`
+📌 *Type:* `{btn.get('type', '')}`
+🎨 *bg:* `{btn.get('bg', '')}`
+🆔 *id:* `{btn.get('id', '(لا يوجد)')}`
+🏷️ *Class:* `{btn.get('cls', '')[:60]}`
+📍 *إحداثيات:* `({btn.get('x', 0)}, {btn.get('y', 0)})`
+📐 *حجم:* `{btn.get('w', 0)} x {btn.get('h', 0)}`
+"""
+        else:
+            msg += "⚠️ ما لقيناش زر أزرق\n\n"
+
+        # ✅ نضيف كل الأزرار
+        msg += "\n*كل الأزرار على الصفحة:*\n"
+        for b in all_buttons[:10]:
+            text = b.get('text', '')[:40] or '(فارغ)'
+            bg = b.get('bg', '')
+            is_blue = "🔵" if b in info.get('all_blue', []) else "⚪"
+            msg += f"  {is_blue} `{text}` ({b.get('tag', '')}) — bg: `{bg}`\n"
+
+        try:
+            await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
+        except Exception as e:
+            log.warning(f"فشل إرسال: {e}")
+            try:
+                await self.sender.reply_text(msg[:4000])
+            except Exception:
+                pass
+
+    # ==================== Click Button ====================
+
+    async def _click_button(self, page, info: dict) -> bool:
+        """
+        يضغط على الزر اللي لقيناه.
+        """
+        btn = info.get("button")
+        if not btn:
+            return False
+
+        x = btn.get("x", 0)
+        y = btn.get("y", 0)
+        text = btn.get("text", "")
+
+        log.info(f"🖱️ نضغط على: '{text}' فـ ({x}, {y})")
+
+        # ✅ 1. Playwright mouse click
+        try:
+            if x > 0 and y > 0:
+                await page.mouse.move(x, y, steps=15)
+                await human_delay(0.5, 1)
+                await page.mouse.down()
+                await human_delay(0.15, 0.3)
+                await page.mouse.up()
+                await human_delay(5, 8)
+                log.info("✅ ضغطنا بـ mouse.click")
+                return True
+        except Exception as e:
+            log.warning(f"mouse: {e}")
+
+        # ✅ 2. Playwright locator بالنص
+        if text:
+            for sel in [
+                f'button:has-text("{text}")',
+                f'a:has-text("{text}")',
+                f'[role="button"]:has-text("{text}")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0 and await el.is_visible():
+                        await el.click(timeout=3000)
+                        log.info(f"✅ ضغطنا بـ {sel}")
+                        await human_delay(5, 8)
+                        return True
+                except Exception:
+                    continue
+
+        # ✅ 3. JS click على الزر الأزرق
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll('button, a, input[type="submit"], [role="button"]');
+                    for (const el of all) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
+                            bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)' ||
+                            bg === 'rgb(13, 101, 45)' || bg === 'rgb(24, 90, 188)') {
+                            el.click();
+                            return { text: (el.innerText || '').substring(0, 50) };
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ ضغطنا بـ JS: {clicked}")
+                await human_delay(5, 8)
+                return True
+        except Exception:
+            pass
+
+        return False
+
     # ==================== Wait for URL Change ====================
 
     async def _wait_for_url_change(self, page, url_before: str, timeout: int = 15) -> bool:
         log.info(f"⏳ ننتظر URL يتغير...")
         for i in range(timeout):
             await asyncio.sleep(1)
-            new_url = page.url
-            if new_url != url_before:
-                log.info(f"✅ URL تبدل: {new_url[:80]}")
+            if page.url != url_before:
+                log.info(f"✅ URL تبدل")
                 return True
         return False
 
-    # ==================== Speedbump / TOS ====================
+    # ==================== Helpers ====================
 
     async def _is_speedbump_or_tos(self, page) -> bool:
         url = page.url.lower()
@@ -149,270 +389,6 @@ class CloudConsole:
         except Exception:
             pass
         return False
-
-    async def _handle_speedbump(self, page, url_before: str) -> bool:
-        log.info("🔍 نحلل صفحة TOS...")
-        await human_delay(5, 8)
-
-        # ✅ 1. نسجل الأزرار
-        try:
-            info = await page.evaluate("""
-                () => {
-                    const r = { buttons: [], checkboxes: [], selects: [] };
-                    for (const b of document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]')) {
-                        if (b.offsetParent === null) continue;
-                        const rect = b.getBoundingClientRect();
-                        const bg = window.getComputedStyle(b).backgroundColor;
-                        const t = (b.innerText || b.value || b.textContent || '').trim();
-                        r.buttons.push({
-                            text: t.substring(0, 80),
-                            tag: b.tagName,
-                            bg: bg,
-                            x: rect.x + rect.width / 2,
-                            y: rect.y + rect.height / 2,
-                            w: rect.width,
-                            h: rect.height,
-                            disabled: b.disabled || false,
-                        });
-                    }
-                    for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                        if (cb.offsetParent === null) continue;
-                        r.checkboxes.push({name: cb.name, id: cb.id, checked: cb.checked});
-                    }
-                    for (const s of document.querySelectorAll('select')) {
-                        if (s.offsetParent === null) continue;
-                        r.selects.push({name: s.name, value: s.value});
-                    }
-                    return r;
-                }
-            """)
-            log.info(f"📋 Buttons: {info.get('buttons')}")
-            log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
-            log.info(f"📋 Selects: {info.get('selects')}")
-        except Exception as e:
-            log.warning(f"فشل: {e}")
-            info = {"buttons": []}
-
-        # Country
-        try:
-            sel = page.locator('select').first
-            if await sel.count() > 0 and await sel.is_visible():
-                current = await sel.input_value()
-                if not current:
-                    try:
-                        await sel.select_option(label="United States")
-                    except Exception:
-                        pass
-                    await human_delay(1, 2)
-        except Exception:
-            pass
-
-        # Checkbox
-        try:
-            result = await page.evaluate("""
-                () => {
-                    for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                        if (cb.offsetParent === null) continue;
-                        if (cb.checked) return { already: true };
-                        cb.scrollIntoView({block: 'center'});
-                        cb.focus();
-                        const lb = cb.closest('label');
-                        if (lb) lb.click(); else cb.click();
-                        cb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                        cb.dispatchEvent(new Event('change', { bubbles: true }));
-                        return { checked: cb.checked };
-                    }
-                    return null;
-                }
-            """)
-            if result:
-                log.info(f"✅ checkbox: {result}")
-                await human_delay(2, 3)
-        except Exception:
-            pass
-
-        await human_delay(3, 5)
-
-        # ============================================
-        # ✅ الزر الأزرق (I understand)
-        # ============================================
-        blue_buttons = [b for b in info.get("buttons", [])
-                        if b.get("bg") in [
-                            "rgb(26, 115, 232)", "rgb(66, 133, 244)",
-                            "rgb(23, 78, 166)", "rgb(21, 101, 192)",
-                            "rgb(13, 101, 45)", "rgb(24, 90, 188)",
-                            "rgb(0, 123, 255)",
-                        ] or "115, 232" in b.get("bg", "") or "133, 244" in b.get("bg", "")]
-
-        if blue_buttons:
-            btn = blue_buttons[0]
-            log.info(f"🔵 زر أزرق: {btn}")
-            try:
-                x = btn.get("x", 0)
-                y = btn.get("y", 0)
-                if x > 0 and y > 0:
-                    await page.mouse.move(x, y, steps=15)
-                    await human_delay(0.5, 1)
-                    await page.mouse.down()
-                    await human_delay(0.15, 0.3)
-                    await page.mouse.up()
-                    await human_delay(5, 8)
-                    log.info(f"✅ ضغطنا على الزر الأزرق ({x}, {y})")
-                    return True
-            except Exception as e:
-                log.warning(f"mouse click: {e}")
-
-        # ============================================
-        # 5 طرق
-        # ============================================
-        for method in range(1, 6):
-            log.info(f"🔘 طريقة {method}/5")
-
-            # طريقة 1: JS click بكلمات موسعة
-            try:
-                clicked = await page.evaluate("""
-                    async () => {
-                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                        const kws = [
-                            'i understand', 'understand', 'i agree', 'agree',
-                            'accept', 'i accept', 'continue', 'submit',
-                            'ok', 'yes', 'understood', 'got it', 'allow',
-                            'قبول', 'موافق', 'أوافق', 'أفهم', 'متابعة', 'حسناً'
-                        ];
-                        const all = document.querySelectorAll(
-                            'button, a, input[type="submit"], input[type="button"], [role="button"]'
-                        );
-                        for (const el of all) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of kws) {
-                                if (t === kw) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.focus();
-                                    await sleep(200);
-                                    el.click();
-                                    return { clicked: t, tag: el.tagName, method: 'exact' };
-                                }
-                            }
-                        }
-                        for (const el of all) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of kws) {
-                                if (t.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.focus();
-                                    await sleep(200);
-                                    el.click();
-                                    return { clicked: t, tag: el.tagName, method: 'includes' };
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ JS: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception as e:
-                log.warning(f"JS: {e}")
-
-            # طريقة 2: Playwright locator
-            for sel in [
-                'button:has-text("I understand")',
-                'button:has-text("Understand")',
-                'button:has-text("I agree")',
-                'button:has-text("Accept")',
-                'button:has-text("Continue")',
-                'a:has-text("I understand")',
-                'a:has-text("Accept")',
-                'button[type="submit"]',
-                'input[type="submit"]',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        log.info(f"✅ Playwright: {sel}")
-                        await el.scroll_into_view_if_needed()
-                        await human_delay(0.5, 1)
-                        try:
-                            await el.click(timeout=3000)
-                        except Exception:
-                            await el.click(force=True, timeout=3000)
-                        await human_delay(5, 8)
-                        return True
-                except Exception:
-                    continue
-
-            # طريقة 3: آخر زر أزرق
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, input[type="submit"], a, [role="button"]');
-                        const v = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
-                        for (const el of v) {
-                            const bg = window.getComputedStyle(el).backgroundColor;
-                            if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
-                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)') {
-                                el.click();
-                                return { clicked: 'blue', text: (el.innerText || '').substring(0, 50), bg };
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ blue: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            # طريقة 4: آخر زر visible
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, input[type="submit"], [role="button"]');
-                        const v = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
-                        if (v.length > 0) {
-                            const last = v[v.length - 1];
-                            last.click();
-                            return { clicked: 'last', text: (last.innerText || '').substring(0, 50) };
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ last: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            # طريقة 5: الزاوية السفلية اليمنى
-            try:
-                vp = page.viewport_size or {"width": 1920, "height": 1080}
-                x = vp["width"] - 150
-                y = vp["height"] - 80
-                log.info(f"🎯 نضغط فـ ({x}, {y})")
-                await page.mouse.move(x, y, steps=10)
-                await human_delay(0.3, 0.5)
-                await page.mouse.down()
-                await human_delay(0.1, 0.2)
-                await page.mouse.up()
-                await human_delay(5, 8)
-                return True
-            except Exception:
-                pass
-
-            await human_delay(2, 3)
-
-        return False
-
-    # ==================== Send Screenshot ====================
 
     async def _send_shot(self, page, caption: str = ""):
         try:
@@ -429,8 +405,6 @@ class CloudConsole:
                     pass
         except Exception:
             pass
-
-    # ==================== Raise Problem ====================
 
     async def _raise_problem(self, page, title: str, details: str):
         log.error(f"❌ {title}: {details}")
@@ -465,8 +439,6 @@ class CloudConsole:
                 await self.sender.reply_text(msg[:4000])
 
         raise RuntimeError(f"{title}\n{details}")
-
-    # ==================== Helpers ====================
 
     async def _is_console_ready(self, page) -> bool:
         url = page.url
@@ -505,8 +477,6 @@ class CloudConsole:
         except Exception:
             return False
 
-    # ==================== Sign In ====================
-
     async def _do_signin(self, page) -> str:
         await self._send_shot(page, "📸 قبل sign in")
 
@@ -538,25 +508,20 @@ class CloudConsole:
         if not email_ok:
             return "ما قدرناش نكتب email"
 
-        await self._send_shot(page, "📸 كتبنا email")
         await self._click_next(page, "email")
         await human_delay(5, 8)
-        await self._send_shot(page, "📸 بعد email")
 
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page):
-                await self._send_shot(page, "🚨 CAPTCHA")
                 solution = await detect_and_solve_captcha(page, user_id=self.user_id, sender=self.sender)
                 if solution:
                     self.captcha_count += 1
-                    await self._send_shot(page, f"✅ CAPTCHA: {solution}")
                     await human_delay(5, 8)
         except Exception:
             pass
 
         await human_delay(3, 5)
-        await self._send_shot(page, "📸 قبل password")
 
         pwd_ok = False
         for sel in ['input[type="password"]', 'input[name="password"]']:
@@ -586,10 +551,8 @@ class CloudConsole:
         if not pwd_ok:
             return "ما لقيناش password"
 
-        await self._send_shot(page, "📸 كتبنا password")
         await self._click_next(page, "password")
         await human_delay(8, 12)
-        await self._send_shot(page, "📸 بعد password Next")
         return "ok"
 
     async def _click_next(self, page, step: str):
