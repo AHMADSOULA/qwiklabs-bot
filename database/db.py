@@ -42,8 +42,7 @@ async def init_db():
 async def add_job(user_id: int, sso_url: str) -> int:
     async with aiosqlite.connect(config.DB_PATH) as db:
         cur = await db.execute(
-            "INSERT INTO jobs (user_id, sso_url) VALUES (?, ?)",
-            (user_id, sso_url)
+            "INSERT INTO jobs (user_id, sso_url) VALUES (?, ?)", (user_id, sso_url)
         )
         await db.commit()
         return cur.lastrowid
@@ -77,8 +76,7 @@ async def register_user(user_id: int, username: str):
 
 
 async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
-                      username: str = None, password: str = None,
-                      state: str = None):
+                      username: str = None, password: str = None, state: str = None):
     async with aiosqlite.connect(config.DB_PATH) as db:
         cur = await db.execute("SELECT user_id FROM sessions WHERE user_id=?", (user_id,))
         exists = await cur.fetchone()
@@ -86,11 +84,9 @@ async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
         if exists:
             updates = []
             params = []
-            for field, val in [
-                ("job_id", job_id), ("sso_url", sso_url),
-                ("username", username), ("password", password),
-                ("state", state),
-            ]:
+            for field, val in [("job_id", job_id), ("sso_url", sso_url),
+                               ("username", username), ("password", password),
+                               ("state", state)]:
                 if val is not None:
                     updates.append(f"{field}=?")
                     params.append(val)
@@ -113,13 +109,9 @@ async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
 async def get_session(user_id: int):
     async with aiosqlite.connect(config.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT * FROM sessions WHERE user_id=?", (user_id,)
-        )
+        cur = await db.execute("SELECT * FROM sessions WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
-        if row:
-            return dict(row)
-        return None
+        return dict(row) if row else None
 
 
 async def clear_session(user_id: int):
