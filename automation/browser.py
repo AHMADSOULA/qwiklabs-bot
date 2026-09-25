@@ -4,6 +4,12 @@ from config import config
 from automation.stealth import STEALTH_JS
 from utils.logger import get_logger
 
+try:
+    from playwright_stealth import stealth_async
+    HAS_STEALTH = True
+except ImportError:
+    HAS_STEALTH = False
+
 log = get_logger("Browser")
 
 
@@ -14,7 +20,6 @@ class StealthBrowser:
 
     async def start(self):
         self.playwright = await async_playwright().start()
-
         os.makedirs(config.CHROME_PROFILE_DIR, exist_ok=True)
 
         args = [
@@ -27,7 +32,6 @@ class StealthBrowser:
             "--no-default-browser-check",
             "--disable-infobars",
             "--window-size=1920,1080",
-            "--start-maximized",
             f"--user-agent={config.USER_AGENT}",
         ]
 
@@ -38,50 +42,55 @@ class StealthBrowser:
                 "username": config.PROXY_USERNAME,
                 "password": config.PROXY_PASSWORD,
             }
-            log.info(f"استعمال البروكسي: {config.PROXY_SERVER}")
 
         launch_kwargs = {
             "user_data_dir": config.CHROME_PROFILE_DIR,
             "headless": config.HEADLESS,
-            "channel": "chrome",
             "args": args,
             "viewport": {"width": 1920, "height": 1080},
             "user_agent": config.USER_AGENT,
             "locale": "en-US",
             "timezone_id": "America/New_York",
-            "color_scheme": "light",
-            "device_scale_factor": 1,
-            "is_mobile": False,
-            "has_touch": False,
-            "java_script_enabled": True,
+            "ignore_https_errors": True,
             "extra_http_headers": {
                 "Accept-Language": "en-US,en;q=0.9",
-                "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
             },
         }
-
         if proxy:
             launch_kwargs["proxy"] = proxy
 
         try:
+            launch_kwargs["channel"] = "chrome"
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
         except Exception as e:
-            log.warning(f"فشل إطلاق Chrome channel، الانتقال إلى Chromium: {e}")
+            log.warning(f"Chrome channel fail: {e}")
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
         await self.context.add_init_script(STEALTH_JS)
+
+        if HAS_STEALTH:
+            async def apply(page):
+                try:
+                    await stealth_async(page)
+                except Exception:
+                    pass
+            self.context.on("page", apply)
+            for p in self.context.pages:
+                await apply(p)
+
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
 
-        log.info("تم إطلاق المتصفح المخفي بنجاح")
+        log.info("✅ المتصفح جاهز")
         return self.context
 
     async def close(self):
         if self.context:
-            await self.context.close()
+            try:
+                await self.context.close()
+            except Exception:
+                pass
         if self.playwright:
             await self.playwright.stop()
         log.info("تم إغلاق المتصفح")
