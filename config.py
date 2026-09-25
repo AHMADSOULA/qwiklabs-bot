@@ -24,11 +24,11 @@ class Config:
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
-    # ===== Proxy =====
-    PROXY_ENABLED = os.getenv("PROXY_ENABLED", "false").lower() == "true"
-    PROXY_SERVER = os.getenv("PROXY_SERVER", "")
-    PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
-    PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
+    # ===== Proxy (معطل) =====
+    PROXY_ENABLED = False
+    PROXY_SERVER = ""
+    PROXY_USERNAME = ""
+    PROXY_PASSWORD = ""
 
     # ===== TrueCaptcha =====
     CAPTCHA_USERID = os.getenv("CAPTCHA_USERID", "")
