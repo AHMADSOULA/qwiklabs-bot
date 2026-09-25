@@ -28,6 +28,9 @@ class CloudConsole:
         await human_delay(3, 5)
         await take_screenshot(page, "cc_loaded")
 
+        # ✅ إرسال Screenshot أولي
+        await self._send_shot(page, "📸 فتح Cloud Console")
+
         for step in range(10):
             self.step_count = step + 1
             log.info(f"═══ خطوة {step + 1}/10 ═══")
@@ -38,40 +41,49 @@ class CloudConsole:
             # ✅ 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ Console ready!")
+                await self._send_shot(page, "✅ دخل لـ Cloud Console")
                 await human_delay(3, 5)
                 return page
 
-            # ✅ 2. Speedbump / TOS
+            # ✅ 2. Speedbump / TOS / Welcome
             if await self._is_speedbump_or_tos(page):
                 log.info("📋 Speedbump/TOS")
+                await self._send_shot(page, "📋 صفحة Terms of Service")
+
                 handled = await self._handle_speedbump(page)
                 if handled:
                     log.info("✅ TOS processed")
+                    await self._send_shot(page, "✅ ضغطنا على Accept")
                     await human_delay(10, 15)
                     continue
                 else:
+                    await self._send_shot(page, "❌ ما قدرناش نضغط Accept")
                     await self._raise_problem(
                         page,
                         "🔴 فشل التعامل مع Speedbump/TOS",
-                        "الصفحة طلبت Terms of Service، ولكن ما قدرناش نضغط على checkbox/continue/accept"
+                        "الصفحة طلبت Terms of Service، ولكن ما قدرناش نضغط"
                     )
 
             # ✅ 3. CAPTCHA
             try:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 if await has_captcha(page):
+                    log.info("🚨 CAPTCHA")
+                    # 📸 نرسل صورة CAPTCHA
+                    await self._send_shot(page, "🚨 CAPTCHA مطلوبة")
+
                     if self.captcha_count >= 3:
                         await self._raise_problem(
                             page,
                             "🔴 CAPTCHA متكررة (3 مرات)",
-                            "Google كتطلب CAPTCHA بزاف — يمكن IP مشبوه"
+                            "Google كتطلب CAPTCHA بزاف"
                         )
-                    log.info("🚨 CAPTCHA")
                     solution = await detect_and_solve_captcha(
                         page, user_id=self.user_id, sender=self.sender
                     )
                     if solution:
                         self.captcha_count += 1
+                        await self._send_shot(page, f"✅ CAPTCHA solved: {solution}")
                         await human_delay(5, 8)
                         continue
                     else:
@@ -86,9 +98,12 @@ class CloudConsole:
             # ✅ 4. Sign in?
             if await self._is_signin(page):
                 log.info("🔑 Sign in")
+                await self._send_shot(page, "🔑 صفحة Sign in")
+
                 try:
                     result = await self._do_signin(page)
                     if result == "ok":
+                        await self._send_shot(page, "✅ تم تسجيل الدخول")
                         await human_delay(6, 10)
                         continue
                     else:
@@ -98,14 +113,11 @@ class CloudConsole:
                             "ما قدرناش نكمل تسجيل الدخول"
                         )
                 except Exception as e:
-                    await self._raise_problem(
-                        page,
-                        "🔴 Sign in exception",
-                        str(e)[:300]
-                    )
+                    await self._raise_problem(page, "🔴 Sign in exception", str(e)[:300])
 
             # ✅ 5. Verify?
             if await self._has_verify(page):
+                await self._send_shot(page, "🔴 Google كتطلب verify")
                 await self._raise_problem(
                     page,
                     "🔴 Google كتطلب verify (2FA)",
@@ -114,10 +126,11 @@ class CloudConsole:
 
             # ✅ 6. كلمة سر غلط؟
             if await self._has_wrong_password(page):
+                await self._send_shot(page, "🔴 كلمة السر غلط")
                 await self._raise_problem(
                     page,
                     "🔴 كلمة السر غلط",
-                    "Google رفضت كلمة السر — جدد الرابط"
+                    "Google رفضت كلمة السر"
                 )
 
             # ✅ 7. صفحة غير معروفة
@@ -127,16 +140,41 @@ class CloudConsole:
         await self._raise_problem(
             page,
             "🔴 فشل بعد 10 خطوات",
-            f"البوت ما قدرش يوصل للـ Console\nURL: {page.url[:200]}"
+            f"URL: {page.url[:200]}"
         )
+
+    # ==================== Send Screenshot ====================
+
+    async def _send_shot(self, page, caption: str = ""):
+        """ياخد Screenshot ويرسلو للبوت"""
+        try:
+            from utils.screenshot import take_screenshot
+            from telegram import InputFile
+            import os
+
+            shot = await take_screenshot(page, caption[:30] if caption else "shot")
+            if not shot or not os.path.exists(shot):
+                return
+
+            if self.sender:
+                try:
+                    with open(shot, "rb") as f:
+                        await self.sender.reply_photo(
+                            photo=InputFile(f),
+                            caption=caption[:1000]
+                        )
+                except Exception as e:
+                    log.warning(f"فشل إرسال صورة: {e}")
+        except Exception as e:
+            log.warning(f"_send_shot: {e}")
 
     # ==================== Raise Problem ====================
 
     async def _raise_problem(self, page, title: str, details: str):
         log.error(f"❌ {title}: {details}")
-        shot = await take_screenshot(page, "problem")
-        info = await self._collect_problem_info(page)
+        await self._send_shot(page, f"{title}\n{details[:200]}")
 
+        info = await self._collect_problem_info(page)
         msg = f"""{title}
 
 📋 *التفاصيل:*
@@ -145,35 +183,20 @@ class CloudConsole:
 🔗 *URL:*
 `{info.get('url', 'N/A')[:200]}`
 
-📄 *نص الصفحة:*
+📄 *نص:*
 {info.get('text', '')[:300]}
 
-🔘 *الأزرار:*
+🔘 *أزرار:*
 {info.get('buttons', [])}
 
 ☑️ *Checkboxes:*
 {info.get('checkboxes', [])}
-
-📝 *Inputs:*
-{info.get('inputs', [])}
-
-⏱️ *الخطوات:* {self.step_count}/10
-🔄 *CAPTCHA:* {self.captcha_count}/3
 """
-
         if self.sender:
             try:
                 await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
             except Exception:
                 await self.sender.reply_text(msg[:4000])
-
-            if shot:
-                try:
-                    from telegram import InputFile
-                    with open(shot, "rb") as f:
-                        await self.sender.reply_photo(photo=InputFile(f), caption=f"📸 {title}")
-                except Exception:
-                    pass
 
         raise RuntimeError(f"{title}\n{details}")
 
@@ -183,11 +206,9 @@ class CloudConsole:
                 () => {
                     const r = {
                         url: window.location.href.substring(0, 250),
-                        title: document.title || '',
                         text: (document.body.innerText || '').substring(0, 400).replace(/\\n+/g, ' | '),
                         buttons: [],
                         checkboxes: [],
-                        inputs: [],
                     };
                     for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
                         if (b.offsetParent === null) continue;
@@ -196,11 +217,7 @@ class CloudConsole:
                     }
                     for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
                         if (cb.offsetParent === null) continue;
-                        r.checkboxes.push({name: cb.name || '', id: cb.id || '', checked: cb.checked});
-                    }
-                    for (const inp of document.querySelectorAll('input')) {
-                        if (inp.offsetParent === null) continue;
-                        r.inputs.push({type: inp.type || '', name: inp.name || '', id: inp.id || ''});
+                        r.checkboxes.push({name: cb.name || '', checked: cb.checked});
                     }
                     return r;
                 }
@@ -228,36 +245,31 @@ class CloudConsole:
         log.info("🔍 نحلل صفحة Speedbump...")
         await human_delay(5, 8)
 
-        # ✅ نسجل العناصر
         try:
             info = await page.evaluate("""
                 () => {
-                    const r = { buttons: [], checkboxes: [], selects: [], iframes: 0 };
+                    const r = { buttons: [], checkboxes: [], selects: [] };
                     for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
                         if (b.offsetParent === null) continue;
                         const t = (b.innerText || b.value || '').trim();
-                        if (t && t.length < 100) r.buttons.push({text: t.substring(0, 60), tag: b.tagName});
+                        if (t && t.length < 100) r.buttons.push({text: t.substring(0, 60)});
                     }
                     for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
                         if (cb.offsetParent === null) continue;
-                        r.checkboxes.push({name: cb.name, id: cb.id, checked: cb.checked});
+                        r.checkboxes.push({name: cb.name, checked: cb.checked});
                     }
                     for (const s of document.querySelectorAll('select')) {
                         if (s.offsetParent === null) continue;
                         r.selects.push({name: s.name, value: s.value});
                     }
-                    r.iframes = document.querySelectorAll('iframe').length;
                     return r;
                 }
             """)
             log.info(f"📋 Buttons: {info.get('buttons')}")
-            log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
-            log.info(f"📋 Selects: {info.get('selects')}")
-            log.info(f"📋 iframes: {info.get('iframes')}")
-        except Exception as e:
-            log.warning(f"فشل تحليل: {e}")
+        except Exception:
+            pass
 
-        # ✅ Country
+        # Country
         try:
             sel = page.locator('select').first
             if await sel.count() > 0 and await sel.is_visible():
@@ -271,7 +283,7 @@ class CloudConsole:
         except Exception:
             pass
 
-        # ✅ Checkbox
+        # Checkbox
         try:
             result = await page.evaluate("""
                 () => {
@@ -301,7 +313,6 @@ class CloudConsole:
         for method in range(1, 6):
             log.info(f"🔘 طريقة {method}/5")
 
-            # طريقة 1: JS click
             try:
                 clicked = await page.evaluate("""
                     async () => {
@@ -309,13 +320,12 @@ class CloudConsole:
                         const kws = ['accept', 'i accept', 'continue', 'agree', 'i agree',
                                      'submit', 'ok', 'yes', 'understood', 'got it'];
                         const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
-                        // exact
                         for (const el of all) {
                             if (el.offsetParent === null || el.disabled) continue;
                             const t = (el.innerText || el.value || '').trim().toLowerCase();
                             if (!t || t.length > 100) continue;
                             for (const kw of kws) {
-                                if (t === kw) {
+                                if (t === kw || t.includes(kw)) {
                                     el.scrollIntoView({block: 'center'});
                                     el.focus();
                                     await sleep(300);
@@ -329,22 +339,6 @@ class CloudConsole:
                                 }
                             }
                         }
-                        // includes
-                        for (const el of all) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of kws) {
-                                if (t.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.focus();
-                                    await sleep(300);
-                                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                                    el.click();
-                                    return { clicked: t, method: 'includes' };
-                                }
-                            }
-                        }
                         return null;
                     }
                 """)
@@ -355,7 +349,7 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"طريقة {method}: {e}")
 
-            # طريقة 2: Blue button
+            # Blue button
             try:
                 clicked = await page.evaluate("""
                     async () => {
@@ -382,19 +376,17 @@ class CloudConsole:
             except Exception:
                 pass
 
-            # طريقة 3: Playwright
+            # Playwright
             for sel in [
                 'button:has-text("Accept")',
                 'button:has-text("I accept")',
                 'button:has-text("Continue")',
                 'button:has-text("Agree")',
                 'button:has-text("I agree")',
-                'a:has-text("Accept")',
-                'div[role="button"]:has-text("Accept")',
             ]:
                 try:
                     el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible() and not await el.is_disabled():
+                    if await el.count() > 0 and await el.is_visible():
                         log.info(f"✅ Playwright: {sel}")
                         try:
                             await el.click(timeout=3000)
@@ -405,14 +397,14 @@ class CloudConsole:
                 except Exception:
                     continue
 
-            # طريقة 4: آخر زر visible
+            # Last button
             try:
                 clicked = await page.evaluate("""
                     () => {
                         const all = document.querySelectorAll('button, input[type="submit"]');
-                        const visible = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
-                        if (visible.length > 0) {
-                            const last = visible[visible.length - 1];
+                        const v = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
+                        if (v.length > 0) {
+                            const last = v[v.length - 1];
                             last.click();
                             return { clicked: 'last', text: (last.innerText || '').substring(0, 50) };
                         }
@@ -433,8 +425,9 @@ class CloudConsole:
     # ==================== Sign In ====================
 
     async def _do_signin(self, page) -> str:
-        await take_screenshot(page, "cc_before_signin")
+        await self._send_shot(page, "📸 قبل تسجيل الدخول")
 
+        # ========== EMAIL ==========
         email_ok = False
         for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="text"]']:
             try:
@@ -463,25 +456,27 @@ class CloudConsole:
         if not email_ok:
             return "ما قدرناش نكتب email"
 
+        await self._send_shot(page, f"📸 كتبنا email: {self.username}")
         await self._click_next(page, "email")
         await human_delay(5, 8)
-        await take_screenshot(page, "cc_after_email")
+        await self._send_shot(page, "📸 بعد email Next")
 
-        # CAPTCHA
+        # ✅ CAPTCHA بعد email
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
-            if await has_captcha(page) and self.captcha_count < 3:
+            if await has_captcha(page):
+                await self._send_shot(page, "🚨 CAPTCHA بعد email")
                 solution = await detect_and_solve_captcha(page, user_id=self.user_id, sender=self.sender)
                 if solution:
                     self.captcha_count += 1
+                    await self._send_shot(page, f"✅ CAPTCHA: {solution}")
                     await human_delay(5, 8)
-                else:
-                    return "CAPTCHA بعد email ما تحلّتش"
         except Exception:
             pass
 
+        # ========== PASSWORD ==========
         await human_delay(3, 5)
-        await take_screenshot(page, "cc_before_pwd")
+        await self._send_shot(page, "📸 قبل كلمة السر")
 
         pwd_ok = False
         for sel in ['input[type="password"]', 'input[name="password"]']:
@@ -509,11 +504,12 @@ class CloudConsole:
                 continue
 
         if not pwd_ok:
-            return "ما لقيناش/ما قدرناش نكتب password"
+            return "ما لقيناش password"
 
+        await self._send_shot(page, "📸 كتبنا password")
         await self._click_next(page, "password")
         await human_delay(8, 12)
-        await take_screenshot(page, "cc_after_pwd")
+        await self._send_shot(page, "📸 بعد password Next")
         return "ok"
 
     async def _click_next(self, page, step: str):
