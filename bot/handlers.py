@@ -13,6 +13,7 @@ from utils.screenshot import take_screenshot
 from automation.browser import StealthBrowser
 from automation.qwiklabs import QwikLabsSession
 from automation.cloud_console import CloudConsole
+from automation.captcha_solver import set_captcha_solution, cancel_captcha
 
 log = get_logger("Handlers")
 job_lock = asyncio.Lock()
@@ -47,7 +48,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
     for jid, status, created in jobs:
         emoji = {"pending": "⏳", "done": "✅", "failed": "❌",
-                 "waiting_password": "🔑"}.get(status, "❔")
+                 "waiting_password": "🔑", "waiting_captcha": "🤖"}.get(status, "❔")
         lines.append(messages.JOB_LINE.format(
             id=jid, status_emoji=emoji, status=status, date=created
         ))
@@ -59,6 +60,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    cancel_captcha(user.id)
     await db.clear_session(user.id)
     b = context.bot_data.pop(f"browser_{user.id}", None)
     context.bot_data.pop(f"page_{user.id}", None)
@@ -233,7 +235,12 @@ async def run_step2(job_id, username, password, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
             cc = CloudConsole(page.context)
-            console_page = await cc.login(username, password)
+            console_page = await cc.login(
+                username, password,
+                user_id=user_id,
+                sender=msg,
+                context=context,
+            )
 
             shot = await take_screenshot(console_page, "after_login")
             if shot:
