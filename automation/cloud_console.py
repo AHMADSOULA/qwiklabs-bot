@@ -13,8 +13,8 @@ class CloudConsole:
         self.password = None
         self.user_id = None
         self.sender = None
-        # ✅ flag: واش ضغطنا على Accept من قبل
         self.tos_clicked = False
+        self.dialog_handled = False
 
     async def login(self, username: str, password: str,
                     user_id: int = None, sender=None, context=None):
@@ -37,6 +37,12 @@ class CloudConsole:
             current_url = page.url
             log.info(f"URL: {current_url}")
 
+            # ✅ 0. Dialog الجديد (Terms of Service) — قبل كل شي
+            if await self._handle_gcloud_dialog(page):
+                log.info("✅ تم التعامل مع Dialog")
+                await human_delay(5, 8)
+                continue
+
             # 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ وصلنا للـ Console!")
@@ -47,24 +53,19 @@ class CloudConsole:
             if await self._is_welcome_page(page):
                 log.info("📋 Welcome/TOS/Speedbump")
 
-                # ✅ إذا ضغطنا قبل، ما نعاودوش — غير نستنى
                 if self.tos_clicked:
                     log.info("⏳ ضغطنا قبل على Accept — نستنى Google تكمل...")
                     await human_delay(10, 15)
-
-                    # نتحققو واش خرجنا
                     new_url = page.url.lower()
                     if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
                         log.info("🎉 خرجنا من TOS بعد الانتظار!")
                         self.tos_clicked = False
                         continue
                     else:
-                        log.warning("⚠️ مازال فـ TOS — Google ما سجلتش")
-                        # استنى أكثر
+                        log.warning("⚠️ مازال فـ TOS")
                         await human_delay(10, 15)
                         continue
                 else:
-                    # ✅ أول مرة: نضغطو مرة وحدة
                     log.info("🖱️ نضغط على Accept مرة وحدة فقط...")
                     clicked = await self._handle_welcome_page_once(page)
                     if clicked:
@@ -80,8 +81,6 @@ class CloudConsole:
             # 3. Sign in?
             if await self._is_signin_page(page):
                 log.info("🔑 Sign in")
-
-                # 3.1 CAPTCHA يدوياً
                 try:
                     from automation.captcha_solver import detect_and_solve_captcha
                     await human_delay(1, 2)
@@ -100,7 +99,6 @@ class CloudConsole:
                 except Exception as e:
                     log.warning(f"فشل CAPTCHA: {e}")
 
-                # 3.2 تسجيل
                 try:
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 8)
@@ -108,7 +106,6 @@ class CloudConsole:
                 except Exception as e:
                     log.warning(f"فشل sign in: {e}")
                     await human_delay(3, 5)
-
                 continue
 
             # 4. Verify?
@@ -127,6 +124,156 @@ class CloudConsole:
 
         await take_screenshot(page, "cc_final_fail")
         raise RuntimeError(f"❌ فشل بعد 8 محاولات\nURL: {page.url[:200]}")
+
+    # ==================== Dialog جديد (Terms of Service) ====================
+
+    async def _handle_gcloud_dialog(self, page) -> bool:
+        """
+        يتعامل مع Dialog Terms of Service الجديد.
+        - يضغط على checkbox
+        - يضغط على Continue
+        """
+        try:
+            # ✅ نفحص واش كاين Dialog
+            has_dialog = await page.evaluate("""
+                () => {
+                    // نلقاو dialogs
+                    const dialogs = document.querySelectorAll(
+                        '[role="dialog"], .modal, [role="alertdialog"], .VfPpkd-P5VOMc, mat-dialog-container'
+                    );
+                    for (const d of dialogs) {
+                        if (d.offsetParent === null) continue;
+                        const text = (d.innerText || '').toLowerCase();
+                        if (text.includes('i agree') || text.includes('terms of service') ||
+                            text.includes('agree to the google cloud') ||
+                            text.includes('welcome student') ||
+                            text.includes('continue')) {
+                            return true;
+                        }
+                    }
+                    // ✅ نتحققو من وجود checkbox
+                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                    for (const cb of checkboxes) {
+                        if (cb.offsetParent === null) continue;
+                        return true;
+                    }
+                    // ✅ نتحققو من زر "Continue"
+                    const all = document.querySelectorAll('button, a, [role="button"]');
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t === 'continue' || t === 'agree and continue' ||
+                            t === 'i agree' || t === 'accept') {
+                            // نتأكدو بلي ماشي زر عام
+                            const parentText = (el.closest('[role="dialog"], .modal, [role="alertdialog"]')?.innerText || '').toLowerCase();
+                            if (parentText.includes('terms of service') ||
+                                parentText.includes('i agree') ||
+                                parentText.includes('welcome student')) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+            """)
+
+            if not has_dialog:
+                return False
+
+            log.info("🔍 لقيت Dialog — نحاول نضغط checkbox + Continue")
+
+            # ✅ 1. نضغطو على checkbox
+            try:
+                clicked_cb = await page.evaluate("""
+                    () => {
+                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                        for (const cb of checkboxes) {
+                            if (cb.offsetParent === null) continue;
+                            if (cb.checked) continue;  // واش checked already
+                            // نلقاو الـ label الأب
+                            const label = cb.closest('label');
+                            if (label) {
+                                label.click();
+                            } else {
+                                cb.click();
+                            }
+                            cb.dispatchEvent(new Event('change', { bubbles: true }));
+                            return {
+                                name: cb.name || '',
+                                id: cb.id || '',
+                                checked: cb.checked,
+                            };
+                        }
+                        return null;
+                    }
+                """)
+                if clicked_cb:
+                    log.info(f"✅ ضغطنا على checkbox: {clicked_cb}")
+                    await human_delay(1, 2)
+            except Exception as e:
+                log.warning(f"فشل checkbox: {e}")
+
+            # ✅ 2. نضغطو على Continue
+            try:
+                clicked_btn = await page.evaluate("""
+                    () => {
+                        const all = document.querySelectorAll('button, a, [role="button"]');
+                        const keywords = ['continue', 'agree', 'accept', 'i agree',
+                                        'agree and continue', 'submit', 'ok', 'yes'];
+                        for (const el of all) {
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const t = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (!t || t.length > 100) continue;
+                            for (const kw of keywords) {
+                                if (t === kw || t.includes(kw)) {
+                                    el.scrollIntoView({block: 'center'});
+                                    el.focus();
+                                    el.click();
+                                    return {
+                                        clicked: t.substring(0, 50),
+                                        tag: el.tagName,
+                                        cls: (el.className || '').toString().substring(0, 60),
+                                    };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked_btn:
+                    log.info(f"✅ ضغطنا على Continue: {clicked_btn}")
+                    await human_delay(3, 5)
+                    return True
+            except Exception as e:
+                log.warning(f"فشل Continue: {e}")
+
+            # ✅ 3. Playwright click احتياطي
+            for sel in [
+                'button:has-text("Continue")',
+                'button:has-text("Agree and continue")',
+                'button:has-text("I agree")',
+                'button:has-text("Accept")',
+                '[role="dialog"] button:has-text("Continue")',
+                'mat-dialog-container button:has-text("Continue")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() == 0:
+                        continue
+                    if not await el.is_visible():
+                        continue
+                    log.info(f"✅ Playwright: {sel}")
+                    await el.click(timeout=5000)
+                    await human_delay(3, 5)
+                    return True
+                except Exception:
+                    continue
+
+            return False
+        except Exception as e:
+            log.warning(f"فشل Dialog: {e}")
+            return False
 
     # ==================== CAPTCHA ====================
 
@@ -197,7 +344,7 @@ class CloudConsole:
         text = (await self._get_body_text(page)).lower()
         if "welcome to your new account" in text:
             return True
-        if "terms of service" in text:
+        if "terms of service" in text and "i understand" in text:
             return True
 
         try:
@@ -260,7 +407,6 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # EMAIL
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -301,7 +447,6 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # CAPTCHA
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             await human_delay(1, 2)
@@ -318,7 +463,6 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"فشل CAPTCHA: {e}")
 
-        # PASSWORD
         await human_delay(2, 4)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -382,45 +526,15 @@ class CloudConsole:
             except Exception:
                 continue
 
-    # ==================== Welcome — مرة وحدة ====================
-
     async def _handle_welcome_page_once(self, page) -> bool:
-        """
-        يضغط على "I understand" مرة وحدة فقط.
-        """
         await human_delay(3, 5)
-
-        # ✅ 1. نسجل الأزرار
-        try:
-            buttons_info = await page.evaluate("""
-                () => {
-                    const all = document.querySelectorAll(
-                        'button, a, [role="button"], input[type="submit"], input[type="button"]'
-                    );
-                    return Array.from(all).map((el, i) => ({
-                        idx: i,
-                        tag: el.tagName,
-                        text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 80),
-                        visible: el.offsetParent !== null,
-                        disabled: el.disabled || false,
-                    }));
-                }
-            """)
-            log.info(f"🔍 الأزرار: {buttons_info}")
-        except Exception as e:
-            log.warning(f"فشل جلب الأزرار: {e}")
-
-        # ✅ 2. ضغطة وحدة فقط
         try:
             clicked = await page.evaluate("""
                 () => {
                     const exactTexts = ['i understand', 'i agree', 'i accept',
                                       'accept', 'agree', 'confirm', 'got it',
-                                      'continue', 'ok', 'yes',
-                                      'أفهم', 'قبول', 'موافق'];
+                                      'continue', 'ok', 'yes'];
                     const all = document.querySelectorAll('button, a, [role="button"]');
-
-                    // الأولوية 1: exact match
                     for (const el of all) {
                         if (el.offsetParent === null) continue;
                         if (el.disabled) continue;
@@ -432,28 +546,10 @@ class CloudConsole:
                                 el.scrollIntoView({block: 'center'});
                                 el.focus();
                                 el.click();
-                                return { clicked: rawText, tag: el.tagName, method: 'exact_once' };
+                                return { clicked: rawText, tag: el.tagName };
                             }
                         }
                     }
-
-                    // الأولوية 2: includes
-                    for (const el of all) {
-                        if (el.offsetParent === null) continue;
-                        if (el.disabled) continue;
-                        const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                        if (!rawText || rawText.length > 100) continue;
-                        const t = rawText.toLowerCase();
-                        if (t.includes('understand') || t.includes('accept') ||
-                            t.includes('agree') || t.includes('continue') ||
-                            t.includes('got it') || t.includes('confirm')) {
-                            el.scrollIntoView({block: 'center'});
-                            el.focus();
-                            el.click();
-                            return { clicked: rawText, tag: el.tagName, method: 'includes_once' };
-                        }
-                    }
-
                     return null;
                 }
             """)
@@ -463,13 +559,10 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"JS: {e}")
 
-        # ✅ 3. Playwright — مرة وحدة
         for sel in [
             'button:has-text("I understand")',
-            'button:has-text("I agree")',
             'button:has-text("Accept")',
             'button[type="submit"]',
-            '.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
         ]:
             try:
                 el = page.locator(sel).first
@@ -477,19 +570,12 @@ class CloudConsole:
                     continue
                 if not await el.is_visible():
                     continue
-                if await el.is_disabled():
-                    continue
-                log.info(f"✅ Playwright click مرة وحدة: {sel}")
+                log.info(f"✅ Playwright: {sel}")
                 await el.click(timeout=5000)
                 return True
-            except Exception as e:
-                log.warning(f"{sel}: {e}")
+            except Exception:
                 continue
-
-        log.warning("⚠️ ما لقيتش زر Accept")
         return False
-
-    # ==================== Console Ready ====================
 
     async def _wait_for_console(self, page, timeout: int = 60000):
         try:
