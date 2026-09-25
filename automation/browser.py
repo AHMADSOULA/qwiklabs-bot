@@ -5,6 +5,7 @@ from config import config
 from automation.stealth import STEALTH_JS
 from utils.logger import get_logger
 
+# ✅ playwright-stealth (إذا موجود)
 try:
     from playwright_stealth import stealth_async
     HAS_STEALTH = True
@@ -23,6 +24,7 @@ class StealthBrowser:
     async def start(self):
         self.playwright = await async_playwright().start()
 
+        # ✅ مجلد Chrome Profile (محفوظ)
         profile_dir = config.CHROME_PROFILE_DIR
         os.makedirs(profile_dir, exist_ok=True)
 
@@ -30,10 +32,11 @@ class StealthBrowser:
             os.path.join(profile_dir, "Default", "Cookies")
         )
         if session_exists:
-            log.info("✅ Chrome Profile محفوظ")
+            log.info("✅ وجدت Chrome Profile محفوظ")
         else:
             log.info("🆕 Chrome Profile جديد")
 
+        # ✅ Args قوية
         args = [
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process,CalculateNativeWinOcclusion",
@@ -49,10 +52,51 @@ class StealthBrowser:
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--disable-notifications",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-sync",
+            "--disable-translate",
+            "--disable-default-apps",
+            "--disable-component-update",
+            "--disable-domain-reliability",
+            "--disable-features=AudioServiceOutOfProcess",
+            "--disable-hang-monitor",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-features=TranslateUI",
+            "--disable-ipc-flooding-protection",
+            "--enable-automation",
+            "--enable-blink-features=IdleDetection",
+            "--force-color-profile=srgb",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-service-autorun",
+            "--password-store=basic",
+            "--use-mock-keychain",
+            "--use-gl=swiftshader",
             "--window-size=1920,1080",
+            "--start-maximized",
             f"--user-agent={config.USER_AGENT}",
         ]
 
+        # ✅ Proxy (إذا مفعل)
+        proxy = None
+        if config.PROXY_ENABLED and config.PROXY_SERVER:
+            proxy_server = config.PROXY_SERVER
+            if not proxy_server.startswith(("http://", "https://", "socks5://", "socks4://")):
+                proxy_server = f"http://{proxy_server}"
+            proxy = {
+                "server": proxy_server,
+                "username": config.PROXY_USERNAME,
+                "password": config.PROXY_PASSWORD,
+            }
+            log.info(f"🌍 Proxy: {proxy_server}")
+
+        # ✅ Launch options
         launch_kwargs = {
             "user_data_dir": profile_dir,
             "headless": config.HEADLESS,
@@ -72,49 +116,74 @@ class StealthBrowser:
                 "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
+                "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.0.0", "Chromium";v="131.0.0.0", "Not_A Brand";v="24.0.0.0"',
+                "Upgrade-Insecure-Requests": "1",
+                "DNT": "1",
             },
         }
+        if proxy:
+            launch_kwargs["proxy"] = proxy
 
+        # ✅ نحاول Chrome channel أولاً (كيبان أكثر واقعية)
         try:
             launch_kwargs["channel"] = "chrome"
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
+            log.info("✅ Chrome channel")
         except Exception as e:
             log.warning(f"فشل Chrome channel: {e}")
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
+            log.info("✅ Chromium عادي")
 
+        # ==========================================
+        # ✅ حقن STEALTH_JS (قبل أي حاجة)
+        # ==========================================
         await self.context.add_init_script(STEALTH_JS)
-        await self.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
 
+        # ✅ إخفاء webdriver إضافي
+        await self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            delete Object.getPrototypeOf(navigator).webdriver;
+        """)
+
+        # ==========================================
+        # ✅ playwright-stealth (إذا موجود)
+        # ==========================================
         if HAS_STEALTH:
             async def apply_stealth(page):
                 try:
                     await stealth_async(page)
+                    log.info(f"✅ stealth مطبق")
                 except Exception as e:
                     log.warning(f"stealth fail: {e}")
 
+            # ✅ نطبقو على كل page جديدة
             self.context.on("page", apply_stealth)
+
+            # ✅ نطبقو على الصفحات الموجودة
             for page in self.context.pages:
                 await apply_stealth(page)
 
+        # ✅ Timeouts
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
 
-        log.info("✅ تم إطلاق المتصفح المخفي")
+        log.info("✅ تم إطلاق المتصفح المخفي بنجاح")
         return self.context
 
     async def close(self):
         if self.context:
+            # ✅ نحفظ الـ cookies قبل الإغلاق
             try:
                 cookies = await self.context.cookies()
-                cookies_file = os.path.join(config.CHROME_PROFILE_DIR, "cookies_backup.json")
+                profile_dir = config.CHROME_PROFILE_DIR
+                cookies_file = os.path.join(profile_dir, "cookies_backup.json")
                 with open(cookies_file, "w") as f:
                     json.dump(cookies, f)
                 log.info(f"✅ حفظت {len(cookies)} cookies")
             except Exception as e:
                 log.warning(f"فشل حفظ cookies: {e}")
+
             await self.context.close()
         if self.playwright:
             await self.playwright.stop()
