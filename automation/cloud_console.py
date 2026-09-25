@@ -14,7 +14,6 @@ class CloudConsole:
         self.user_id = None
         self.sender = None
         self.captcha_count = 0
-        self.step_count = 0
 
     async def login(self, username: str, password: str, user_id: int = None, sender=None):
         self.username = username
@@ -26,17 +25,14 @@ class CloudConsole:
         log.info("تسجيل الدخول...")
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
-        await take_screenshot(page, "cc_loaded")
-
-        # ✅ إرسال Screenshot أولي
         await self._send_shot(page, "📸 فتح Cloud Console")
 
-        for step in range(10):
-            self.step_count = step + 1
-            log.info(f"═══ خطوة {step + 1}/10 ═══")
+        for step in range(12):
+            log.info(f"═══ خطوة {step + 1}/12 ═══")
             await human_delay(2, 3)
             await take_screenshot(page, f"cc_step_{step}")
-            log.info(f"URL: {page.url[:120]}")
+            current_url = page.url
+            log.info(f"URL: {current_url[:120]}")
 
             # ✅ 1. Console ready?
             if await self._is_console_ready(page):
@@ -45,23 +41,37 @@ class CloudConsole:
                 await human_delay(3, 5)
                 return page
 
-            # ✅ 2. Speedbump / TOS / Welcome
+            # ✅ 2. Speedbump / TOS
             if await self._is_speedbump_or_tos(page):
-                log.info("📋 Speedbump/TOS")
+                log.info("📋 صفحة TOS")
                 await self._send_shot(page, "📋 صفحة Terms of Service")
 
-                handled = await self._handle_speedbump(page)
+                # ✅ نحفظ URL قبل الضغط
+                url_before = page.url
+
+                handled = await self._handle_speedbump(page, url_before)
                 if handled:
-                    log.info("✅ TOS processed")
-                    await self._send_shot(page, "✅ ضغطنا على Accept")
-                    await human_delay(10, 15)
-                    continue
+                    log.info("✅ ضغط Accept — ننتظر تغيير الصفحة...")
+                    # ✅ ننتظر الصفحة تبدل (URL أو DOM)
+                    changed = await self._wait_for_url_change(page, url_before, timeout=15)
+                    if changed:
+                        log.info("🎉 الصفحة تبدلت!")
+                        await self._send_shot(page, "🎉 خرجنا من TOS")
+                        await human_delay(8, 12)
+                        continue
+                    else:
+                        log.warning("⚠️ الصفحة ما تبدلتش — نعاودو")
+                        await self._send_shot(page, "⚠️ ما تبدلش — نعاود")
+                        await human_delay(3, 5)
+                        # ✅ نحاول مرة أخرى بطريقة مختلفة
+                        await self._force_click_blue_button(page)
+                        await human_delay(5, 8)
+                        continue
                 else:
-                    await self._send_shot(page, "❌ ما قدرناش نضغط Accept")
                     await self._raise_problem(
                         page,
-                        "🔴 فشل التعامل مع Speedbump/TOS",
-                        "الصفحة طلبت Terms of Service، ولكن ما قدرناش نضغط"
+                        "🔴 ما لقيناش زر Accept",
+                        "الصفحة فيها Terms of Service ولكن ما لقيناش زر"
                     )
 
             # ✅ 3. CAPTCHA
@@ -69,29 +79,21 @@ class CloudConsole:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 if await has_captcha(page):
                     log.info("🚨 CAPTCHA")
-                    # 📸 نرسل صورة CAPTCHA
-                    await self._send_shot(page, "🚨 CAPTCHA مطلوبة")
+                    await self._send_shot(page, "🚨 CAPTCHA")
 
                     if self.captcha_count >= 3:
-                        await self._raise_problem(
-                            page,
-                            "🔴 CAPTCHA متكررة (3 مرات)",
-                            "Google كتطلب CAPTCHA بزاف"
-                        )
+                        await self._raise_problem(page, "🔴 CAPTCHA متكررة", "3 مرات")
+
                     solution = await detect_and_solve_captcha(
                         page, user_id=self.user_id, sender=self.sender
                     )
                     if solution:
                         self.captcha_count += 1
-                        await self._send_shot(page, f"✅ CAPTCHA solved: {solution}")
+                        await self._send_shot(page, f"✅ CAPTCHA: {solution}")
                         await human_delay(5, 8)
                         continue
                     else:
-                        await self._raise_problem(
-                            page,
-                            "🔴 CAPTCHA ما تحلّتش",
-                            "ما قدرناش نحلو CAPTCHA"
-                        )
+                        await self._raise_problem(page, "🔴 CAPTCHA ما تحلّتش", "")
             except Exception as e:
                 log.warning(f"CAPTCHA: {e}")
 
@@ -99,7 +101,6 @@ class CloudConsole:
             if await self._is_signin(page):
                 log.info("🔑 Sign in")
                 await self._send_shot(page, "🔑 صفحة Sign in")
-
                 try:
                     result = await self._do_signin(page)
                     if result == "ok":
@@ -107,123 +108,132 @@ class CloudConsole:
                         await human_delay(6, 10)
                         continue
                     else:
-                        await self._raise_problem(
-                            page,
-                            f"🔴 Sign in فشل: {result}",
-                            "ما قدرناش نكمل تسجيل الدخول"
-                        )
+                        await self._raise_problem(page, f"🔴 Sign in: {result}", "")
                 except Exception as e:
                     await self._raise_problem(page, "🔴 Sign in exception", str(e)[:300])
 
             # ✅ 5. Verify?
             if await self._has_verify(page):
-                await self._send_shot(page, "🔴 Google كتطلب verify")
-                await self._raise_problem(
-                    page,
-                    "🔴 Google كتطلب verify (2FA)",
-                    "Google كتطلب تأكيد الهاتف/الإيميل"
-                )
+                await self._send_shot(page, "🔴 verify مطلوب")
+                await self._raise_problem(page, "🔴 verify (2FA)", "")
 
             # ✅ 6. كلمة سر غلط؟
             if await self._has_wrong_password(page):
                 await self._send_shot(page, "🔴 كلمة السر غلط")
-                await self._raise_problem(
-                    page,
-                    "🔴 كلمة السر غلط",
-                    "Google رفضت كلمة السر"
-                )
+                await self._raise_problem(page, "🔴 كلمة السر غلط", "")
 
-            # ✅ 7. صفحة غير معروفة
-            log.warning(f"❓ صفحة: {page.url[:100]}")
+            log.warning(f"❓ صفحة: {current_url[:100]}")
             await human_delay(5, 8)
 
-        await self._raise_problem(
-            page,
-            "🔴 فشل بعد 10 خطوات",
-            f"URL: {page.url[:200]}"
-        )
+        await self._raise_problem(page, "🔴 فشل بعد 12 خطوة", f"URL: {page.url[:200]}")
 
-    # ==================== Send Screenshot ====================
+    # ==================== Wait for URL Change ====================
 
-    async def _send_shot(self, page, caption: str = ""):
-        """ياخد Screenshot ويرسلو للبوت"""
+    async def _wait_for_url_change(self, page, url_before: str, timeout: int = 15) -> bool:
+        """ينتظر URL يتغير"""
+        log.info(f"⏳ ننتظر URL يتغير من: {url_before[:80]}")
+        for i in range(timeout):
+            await asyncio.sleep(1)
+            new_url = page.url
+            if new_url != url_before:
+                log.info(f"✅ URL تبدل: {new_url[:80]}")
+                return True
+        return False
+
+    # ==================== Force Click Blue Button ====================
+
+    async def _force_click_blue_button(self, page) -> bool:
+        """
+        يضغط على الزر الأزرق بـ Playwright مباشرة (ماشي JS).
+        """
+        log.info("🔵 نحاول نضغط الزر الأزرق بـ Playwright...")
+
+        # ✅ 1. دور على الزر الأزرق عبر JS (نجيب معلومات)
         try:
-            from utils.screenshot import take_screenshot
-            from telegram import InputFile
-            import os
-
-            shot = await take_screenshot(page, caption[:30] if caption else "shot")
-            if not shot or not os.path.exists(shot):
-                return
-
-            if self.sender:
-                try:
-                    with open(shot, "rb") as f:
-                        await self.sender.reply_photo(
-                            photo=InputFile(f),
-                            caption=caption[:1000]
-                        )
-                except Exception as e:
-                    log.warning(f"فشل إرسال صورة: {e}")
-        except Exception as e:
-            log.warning(f"_send_shot: {e}")
-
-    # ==================== Raise Problem ====================
-
-    async def _raise_problem(self, page, title: str, details: str):
-        log.error(f"❌ {title}: {details}")
-        await self._send_shot(page, f"{title}\n{details[:200]}")
-
-        info = await self._collect_problem_info(page)
-        msg = f"""{title}
-
-📋 *التفاصيل:*
-{details}
-
-🔗 *URL:*
-`{info.get('url', 'N/A')[:200]}`
-
-📄 *نص:*
-{info.get('text', '')[:300]}
-
-🔘 *أزرار:*
-{info.get('buttons', [])}
-
-☑️ *Checkboxes:*
-{info.get('checkboxes', [])}
-"""
-        if self.sender:
-            try:
-                await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
-            except Exception:
-                await self.sender.reply_text(msg[:4000])
-
-        raise RuntimeError(f"{title}\n{details}")
-
-    async def _collect_problem_info(self, page) -> dict:
-        try:
-            return await page.evaluate("""
+            buttons = await page.evaluate("""
                 () => {
-                    const r = {
-                        url: window.location.href.substring(0, 250),
-                        text: (document.body.innerText || '').substring(0, 400).replace(/\\n+/g, ' | '),
-                        buttons: [],
-                        checkboxes: [],
-                    };
-                    for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
-                        if (b.offsetParent === null) continue;
-                        const t = (b.innerText || b.value || '').trim();
-                        if (t && t.length < 60) r.buttons.push(t);
+                    const result = [];
+                    for (const el of document.querySelectorAll('button, a, input[type="submit"], [role="button"]')) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        const is_blue = (
+                            bg === 'rgb(26, 115, 232)' ||
+                            bg === 'rgb(66, 133, 244)' ||
+                            bg === 'rgb(23, 78, 166)' ||
+                            bg === 'rgb(21, 101, 192)' ||
+                            bg === 'rgb(13, 101, 45)' ||
+                            bg === 'rgb(24, 90, 188)' ||
+                            bg === 'rgb(0, 123, 255)' ||
+                            bg.includes('26, 115') ||
+                            bg.includes('66, 133')
+                        );
+                        if (is_blue) {
+                            const rect = el.getBoundingClientRect();
+                            result.push({
+                                text: (el.innerText || el.value || '').trim().substring(0, 50),
+                                tag: el.tagName,
+                                bg: bg,
+                                x: rect.x + rect.width / 2,
+                                y: rect.y + rect.height / 2,
+                                w: rect.width,
+                                h: rect.height,
+                            });
+                        }
                     }
-                    for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                        if (cb.offsetParent === null) continue;
-                        r.checkboxes.push({name: cb.name || '', checked: cb.checked});
-                    }
-                    return r;
+                    return result;
                 }
             """)
+            log.info(f"🔵 أزرار زرقاء: {buttons}")
         except Exception as e:
-            return {"error": str(e)}
+            log.warning(f"فشل جلب أزرار: {e}")
+            buttons = []
+
+        # ✅ 2. Playwright click (بالإحداثيات)
+        for btn in buttons:
+            try:
+                x = btn.get("x", 0)
+                y = btn.get("y", 0)
+                if x <= 0 or y <= 0:
+                    continue
+
+                log.info(f"🎯 Playwright click على ({x}, {y}) — {btn.get('text')}")
+
+                # ✅ طريقة 1: page.mouse.click
+                await page.mouse.move(x, y, steps=10)
+                await human_delay(0.3, 0.5)
+                await page.mouse.down()
+                await human_delay(0.1, 0.2)
+                await page.mouse.up()
+                await human_delay(3, 5)
+
+                return True
+            except Exception as e:
+                log.warning(f"mouse click فشل: {e}")
+                continue
+
+        # ✅ 3. Playwright locator
+        for sel in [
+            'button:has-text("Accept")',
+            'button:has-text("I accept")',
+            'button:has-text("Continue")',
+            'button:has-text("Agree")',
+            'button:has-text("I agree")',
+            'button[type="submit"]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    log.info(f"✅ Playwright locator: {sel}")
+                    await el.scroll_into_view_if_needed()
+                    await human_delay(0.3, 0.5)
+                    await el.click(timeout=5000)
+                    await human_delay(3, 5)
+                    return True
+            except Exception as e:
+                log.warning(f"{sel}: {e}")
+                continue
+
+        return False
 
     # ==================== Speedbump / TOS ====================
 
@@ -241,18 +251,20 @@ class CloudConsole:
             pass
         return False
 
-    async def _handle_speedbump(self, page) -> bool:
-        log.info("🔍 نحلل صفحة Speedbump...")
+    async def _handle_speedbump(self, page, url_before: str) -> bool:
+        log.info("🔍 نحلل صفحة TOS...")
         await human_delay(5, 8)
 
+        # ✅ نسجل الأزرار
         try:
             info = await page.evaluate("""
                 () => {
                     const r = { buttons: [], checkboxes: [], selects: [] };
-                    for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
+                    for (const b of document.querySelectorAll('button, a, input[type="submit"], [role="button"]')) {
                         if (b.offsetParent === null) continue;
                         const t = (b.innerText || b.value || '').trim();
-                        if (t && t.length < 100) r.buttons.push({text: t.substring(0, 60)});
+                        const bg = window.getComputedStyle(b).backgroundColor;
+                        if (t && t.length < 100) r.buttons.push({text: t.substring(0, 60), bg: bg});
                     }
                     for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
                         if (cb.offsetParent === null) continue;
@@ -266,6 +278,8 @@ class CloudConsole:
                 }
             """)
             log.info(f"📋 Buttons: {info.get('buttons')}")
+            log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
+            log.info(f"📋 Selects: {info.get('selects')}")
         except Exception:
             pass
 
@@ -309,125 +323,15 @@ class CloudConsole:
 
         await human_delay(3, 5)
 
-        # ✅ 5 طرق للضغط
-        for method in range(1, 6):
-            log.info(f"🔘 طريقة {method}/5")
-
-            try:
-                clicked = await page.evaluate("""
-                    async () => {
-                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                        const kws = ['accept', 'i accept', 'continue', 'agree', 'i agree',
-                                     'submit', 'ok', 'yes', 'understood', 'got it'];
-                        const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
-                        for (const el of all) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of kws) {
-                                if (t === kw || t.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.focus();
-                                    await sleep(300);
-                                    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-                                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                                    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-                                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                                    el.click();
-                                    return { clicked: t, method: 'exact' };
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ طريقة {method}: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception as e:
-                log.warning(f"طريقة {method}: {e}")
-
-            # Blue button
-            try:
-                clicked = await page.evaluate("""
-                    async () => {
-                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                        for (const el of document.querySelectorAll('button, input[type="submit"]')) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const bg = window.getComputedStyle(el).backgroundColor;
-                            if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
-                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)') {
-                                el.scrollIntoView({block: 'center'});
-                                el.focus();
-                                await sleep(300);
-                                el.click();
-                                return { text: (el.innerText || '').substring(0, 50), bg };
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ Blue button: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            # Playwright
-            for sel in [
-                'button:has-text("Accept")',
-                'button:has-text("I accept")',
-                'button:has-text("Continue")',
-                'button:has-text("Agree")',
-                'button:has-text("I agree")',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        log.info(f"✅ Playwright: {sel}")
-                        try:
-                            await el.click(timeout=3000)
-                        except Exception:
-                            await el.click(force=True, timeout=3000)
-                        await human_delay(5, 8)
-                        return True
-                except Exception:
-                    continue
-
-            # Last button
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, input[type="submit"]');
-                        const v = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
-                        if (v.length > 0) {
-                            const last = v[v.length - 1];
-                            last.click();
-                            return { clicked: 'last', text: (last.innerText || '').substring(0, 50) };
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ Last button: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            await human_delay(2, 3)
-
-        return False
+        # ✅ نضغط على الزر الأزرق
+        return await self._force_click_blue_button(page)
 
     # ==================== Sign In ====================
 
     async def _do_signin(self, page) -> str:
-        await self._send_shot(page, "📸 قبل تسجيل الدخول")
+        await self._send_shot(page, "📸 قبل sign in")
 
-        # ========== EMAIL ==========
+        # EMAIL
         email_ok = False
         for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="text"]']:
             try:
@@ -456,16 +360,16 @@ class CloudConsole:
         if not email_ok:
             return "ما قدرناش نكتب email"
 
-        await self._send_shot(page, f"📸 كتبنا email: {self.username}")
+        await self._send_shot(page, f"📸 كتبنا email")
         await self._click_next(page, "email")
         await human_delay(5, 8)
-        await self._send_shot(page, "📸 بعد email Next")
+        await self._send_shot(page, "📸 بعد email")
 
-        # ✅ CAPTCHA بعد email
+        # CAPTCHA
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page):
-                await self._send_shot(page, "🚨 CAPTCHA بعد email")
+                await self._send_shot(page, "🚨 CAPTCHA")
                 solution = await detect_and_solve_captcha(page, user_id=self.user_id, sender=self.sender)
                 if solution:
                     self.captcha_count += 1
@@ -474,9 +378,9 @@ class CloudConsole:
         except Exception:
             pass
 
-        # ========== PASSWORD ==========
+        # PASSWORD
         await human_delay(3, 5)
-        await self._send_shot(page, "📸 قبل كلمة السر")
+        await self._send_shot(page, "📸 قبل password")
 
         pwd_ok = False
         for sel in ['input[type="password"]', 'input[name="password"]']:
@@ -522,6 +426,58 @@ class CloudConsole:
                     return
             except Exception:
                 continue
+
+    # ==================== Helpers ====================
+
+    async def _send_shot(self, page, caption: str = ""):
+        try:
+            from telegram import InputFile
+            import os
+            shot = await take_screenshot(page, caption[:30] if caption else "shot")
+            if not shot or not os.path.exists(shot):
+                return
+            if self.sender:
+                try:
+                    with open(shot, "rb") as f:
+                        await self.sender.reply_photo(photo=InputFile(f), caption=caption[:1000])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _raise_problem(self, page, title: str, details: str):
+        log.error(f"❌ {title}: {details}")
+        await self._send_shot(page, f"❌ {title}")
+
+        info = {}
+        try:
+            info = await page.evaluate("""
+                () => ({
+                    url: window.location.href.substring(0, 250),
+                    text: (document.body.innerText || '').substring(0, 400).replace(/\\n+/g, ' | '),
+                })
+            """)
+        except Exception:
+            pass
+
+        msg = f"""{title}
+
+📋 *التفاصيل:*
+{details}
+
+🔗 *URL:*
+`{info.get('url', 'N/A')[:200]}`
+
+📄 *نص:*
+{info.get('text', '')[:300]}
+"""
+        if self.sender:
+            try:
+                await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
+            except Exception:
+                await self.sender.reply_text(msg[:4000])
+
+        raise RuntimeError(f"{title}\n{details}")
 
     async def _is_console_ready(self, page) -> bool:
         url = page.url
