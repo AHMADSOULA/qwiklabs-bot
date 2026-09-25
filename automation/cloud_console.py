@@ -27,8 +27,8 @@ class CloudConsole:
         await human_delay(3, 5)
         await self._send_shot(page, "📸 فتح Cloud Console")
 
-        for step in range(15):
-            log.info(f"═══ خطوة {step + 1}/15 ═══")
+        for step in range(12):
+            log.info(f"═══ خطوة {step + 1}/12 ═══")
             await human_delay(2, 3)
             await take_screenshot(page, f"cc_step_{step}")
             current_url = page.url
@@ -48,37 +48,28 @@ class CloudConsole:
 
                 url_before = page.url
 
-                # ✅ نضغط على "I understand" بنفس طريقة "Next"
-                clicked = await self._click_i_understand_like_next(page)
-
+                # ✅ الطريقة الأولى اللي نجحت
+                clicked = await self._click_i_understand_simple(page)
                 if clicked:
-                    log.info("✅ ضغطنا I understand — ننتظر")
-                    changed = await self._wait_for_url_change(page, url_before, timeout=15)
-                    if changed:
-                        log.info("🎉 خرجنا من TOS")
-                        await self._send_shot(page, "🎉 خرجنا من TOS")
+                    log.info(f"✅ ضغطنا: {clicked}")
+                    await human_delay(8, 12)
+                    await self._send_shot(page, "🎉 بعد الضغط")
+                    continue
+                else:
+                    # ✅ نجربو مرة ثانية بعد 3 ثواني
+                    await human_delay(3, 5)
+                    clicked = await self._click_i_understand_simple(page)
+                    if clicked:
+                        log.info(f"✅ ضغطنا (محاولة 2): {clicked}")
                         await human_delay(8, 12)
+                        await self._send_shot(page, "🎉 بعد الضغط (2)")
                         continue
                     else:
-                        log.warning("⚠️ ما تبدلش — نضغطو مرة أخرى")
-                        await self._send_shot(page, "⚠️ ما تبدلش — نعاود")
-                        # ✅ نحاول مرة أخرى بعد 5 ثواني
-                        await human_delay(5, 8)
-                        clicked2 = await self._click_i_understand_like_next(page)
-                        if clicked2:
-                            changed2 = await self._wait_for_url_change(page, url_before, timeout=15)
-                            if changed2:
-                                log.info("🎉 خرجنا من TOS (محاولة 2)")
-                                await human_delay(8, 12)
-                                continue
-                        await human_delay(5, 8)
-                        continue
-                else:
-                    await self._raise_problem(
-                        page,
-                        "🔴 ما قدرناش نضغط I understand",
-                        "الصفحة فيها TOS ولكن زر I understand ما لقيناهش"
-                    )
+                        await self._raise_problem(
+                            page,
+                            "🔴 ما لقيناش زر Accept",
+                            "الصفحة فيها TOS ولكن ما لقيناش زر"
+                        )
 
             # ✅ 3. CAPTCHA
             try:
@@ -129,184 +120,125 @@ class CloudConsole:
             log.warning(f"❓ صفحة: {current_url[:100]}")
             await human_delay(5, 8)
 
-        await self._raise_problem(page, "🔴 فشل بعد 15 خطوة", f"URL: {page.url[:200]}")
+        await self._raise_problem(page, "🔴 فشل بعد 12 خطوة", f"URL: {page.url[:200]}")
 
-    # ==================== Click I Understand (نفس طريقة Next) ====================
+    # ==================== Click I Understand (الطريقة الأولى) ====================
 
-    async def _click_i_understand_like_next(self, page) -> bool:
+    async def _click_i_understand_simple(self, page) -> str:
         """
-        يضغط على "I understand" بنفس طريقة Playwright (كيما Next).
+        الطريقة الأولى اللي نجحت:
+        JS evaluate + keywords + el.click()
         """
-        log.info("🔍 نبحث عن زر 'I understand'...")
+        log.info("🔍 نبحث عن زر Accept/I understand...")
 
-        # ✅ 1. نسجل الأزرار
+        # ✅ نسجل الأزرار
         try:
             buttons = await page.evaluate("""
                 () => {
                     const r = [];
-                    for (const el of document.querySelectorAll('button, a, input[type="submit"], [role="button"]')) {
+                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
                         if (el.offsetParent === null) continue;
-                        const rect = el.getBoundingClientRect();
-                        const bg = window.getComputedStyle(el).backgroundColor;
                         const t = (el.innerText || el.value || '').trim();
-                        r.push({
-                            text: t.substring(0, 80),
-                            tag: el.tagName,
-                            bg: bg,
-                            x: rect.x + rect.width / 2,
-                            y: rect.y + rect.height / 2,
-                        });
+                        if (t && t.length < 100) r.push(t.substring(0, 80));
                     }
                     return r;
                 }
             """)
             log.info(f"📋 الأزرار: {buttons}")
-        except Exception as e:
-            log.warning(f"فشل: {e}")
+        except Exception:
+            pass
 
-        # ✅ 2. Playwright locator — نفس طريقة Next
-        for sel in [
-            'button:has-text("I understand")',
-            'button:has-text("Understand")',
-            'button:has-text("I agree")',
-            'button:has-text("Accept")',
-            'button:has-text("Continue")',
-            'a:has-text("I understand")',
-            '[role="button"]:has-text("I understand")',
-            'button[type="submit"]',
-        ]:
-            try:
-                el = page.locator(sel).first
-                cnt = await el.count()
-                if cnt == 0:
-                    continue
-                if not await el.is_visible():
-                    continue
-
-                log.info(f"✅ Playwright: {sel}")
-
-                # ✅ نفس طريقة Next
-                await el.scroll_into_view_if_needed()
-                await human_delay(0.3, 0.6)
-
-                try:
-                    await el.click(timeout=5000)
-                    log.info(f"✅ click عادي نجح")
-                    return True
-                except Exception as e1:
-                    log.warning(f"click عادي فشل: {e1}")
-
-                try:
-                    await el.click(force=True, timeout=5000)
-                    log.info(f"✅ click force نجح")
-                    return True
-                except Exception as e2:
-                    log.warning(f"force فشل: {e2}")
-
-                try:
-                    await el.dispatch_event("click")
-                    log.info(f"✅ dispatch_event نجح")
-                    return True
-                except Exception as e3:
-                    log.warning(f"dispatch_event فشل: {e3}")
-            except Exception:
-                continue
-
-        # ✅ 3. Playwright mouse click بالإحداثيات
-        try:
-            btn = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('button, a, input[type="submit"], [role="button"]')) {
-                        if (el.offsetParent === null) continue;
-                        const t = (el.innerText || el.value || '').trim().toLowerCase();
-                        if (t === 'i understand' || t.includes('understand')) {
-                            const rect = el.getBoundingClientRect();
-                            return {
-                                x: rect.x + rect.width / 2,
-                                y: rect.y + rect.height / 2,
-                                text: t,
-                            };
-                        }
-                    }
-                    // ✅ زر أزرق
-                    for (const el of document.querySelectorAll('button, input[type="submit"], [role="button"]')) {
-                        if (el.offsetParent === null) continue;
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        if (bg.includes('11, 87') || bg.includes('26, 115') || bg.includes('66, 133')) {
-                            const rect = el.getBoundingClientRect();
-                            return {
-                                x: rect.x + rect.width / 2,
-                                y: rect.y + rect.height / 2,
-                                text: (el.innerText || '').substring(0, 50),
-                            };
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if btn and btn.get("x", 0) > 0:
-                log.info(f"🖱️ mouse click على: {btn.get('text')} فـ ({btn['x']}, {btn['y']})")
-                await page.mouse.move(btn["x"], btn["y"], steps=15)
-                await human_delay(0.5, 1)
-                await page.mouse.down()
-                await human_delay(0.15, 0.3)
-                await page.mouse.up()
-                await human_delay(5, 8)
-                return True
-        except Exception as e:
-            log.warning(f"mouse: {e}")
-
-        # ✅ 4. JS click
+        # ============================================
+        # ✅ الطريقة الأولى (اللي نجحت)
+        # ============================================
         try:
             clicked = await page.evaluate("""
                 () => {
-                    for (const el of document.querySelectorAll('button, a, input[type="submit"], [role="button"]')) {
+                    // ✅ الكلمات المفتاحية (اللي نجحت قبل)
+                    const keywords = [
+                        'i understand', 'understand',
+                        'accept', 'i accept',
+                        'agree', 'i agree',
+                        'confirm', 'got it',
+                        'continue',
+                        'understood',
+                        'قبول', 'موافق', 'أفهم'
+                    ];
+
+                    // ✅ كل العناصر القابلة للنقر
+                    const all = document.querySelectorAll(
+                        'button, a, [role="button"], input[type="submit"], input[type="button"]'
+                    );
+
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+
+                        const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                        if (!text || text.length > 100) continue;
+
+                        // ✅ نتحقق من الكلمات
+                        for (const kw of keywords) {
+                            if (text.includes(kw)) {
+                                // ✅ نضغطو مباشرة
+                                el.click();
+                                return text.substring(0, 80);
+                            }
+                        }
+                    }
+
+                    return null;
+                }
+            """)
+
+            if clicked:
+                log.info(f"✅ ضغطنا على: '{clicked}'")
+                return clicked
+        except Exception as e:
+            log.warning(f"JS: {e}")
+
+        # ============================================
+        # ✅ الطريقة 2: زر أزرق (11, 87, 208)
+        # ============================================
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('button, input[type="submit"], [role="button"]')) {
                         if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || el.value || '').trim().toLowerCase();
-                        if (t === 'i understand' || t.includes('understand')) {
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        if (bg.includes('11, 87') || bg.includes('26, 115') || bg.includes('66, 133')) {
                             el.click();
-                            return { text: t, method: 'understand' };
+                            return (el.innerText || '').trim().substring(0, 80) || 'blue-button';
                         }
                     }
                     return null;
                 }
             """)
             if clicked:
-                log.info(f"✅ JS click: {clicked}")
-                await human_delay(5, 8)
-                return True
-        except Exception:
-            pass
+                log.info(f"✅ ضغطنا على الزر الأزرق: {clicked}")
+                return clicked
+        except Exception as e:
+            log.warning(f"blue: {e}")
 
-        return False
-
-    # ==================== Wait for URL Change ====================
-
-    async def _wait_for_url_change(self, page, url_before: str, timeout: int = 15) -> bool:
-        log.info(f"⏳ ننتظر URL يتغير...")
-        for i in range(timeout):
-            await asyncio.sleep(1)
-            if page.url != url_before:
-                log.info(f"✅ URL تبدل")
-                return True
-            # ✅ نتحقق واش الزر اختفى
+        # ============================================
+        # ✅ الطريقة 3: Playwright locator (احتياطي)
+        # ============================================
+        for sel in [
+            'button:has-text("I understand")',
+            'button:has-text("Accept")',
+            'button:has-text("Continue")',
+            'button:has-text("I agree")',
+        ]:
             try:
-                has_btn = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll('button, [role="button"]')) {
-                            if (el.offsetParent === null) continue;
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            if (t.includes('understand')) return true;
-                        }
-                        return false;
-                    }
-                """)
-                if not has_btn:
-                    log.info("✅ الزر اختفى — الصفحة تبدلت")
-                    return True
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    log.info(f"✅ Playwright: {sel}")
+                    await el.click(timeout=5000)
+                    return sel
             except Exception:
-                pass
-        return False
+                continue
+
+        return None
 
     # ==================== Helpers ====================
 
