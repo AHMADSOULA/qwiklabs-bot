@@ -26,8 +26,6 @@ CPU = "2"
 PORT = 8080
 
 
-# ==================== أوامر ====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.register_user(user.id, user.username or user.first_name)
@@ -74,26 +72,19 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_photo(msg, filepath, caption=""):
-    """يرسل صورة فـ تليجرام مع معالجة الأخطاء"""
     try:
         if not filepath:
-            log.warning("لا يوجد مسار للصورة")
             return False
         import os
         if not os.path.exists(filepath):
-            log.warning(f"الصورة ما كايناش: {filepath}")
             return False
-
         with open(filepath, "rb") as f:
             await msg.reply_photo(photo=InputFile(f), caption=caption[:1000])
-        log.info(f"✅ تم إرسال الصورة: {filepath}")
         return True
     except Exception as e:
-        log.error(f"فشل إرسال الصورة {filepath}: {e}")
+        log.error(f"فشل إرسال صورة: {e}")
         return False
 
-
-# ==================== استقبال SSO ====================
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
@@ -127,8 +118,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
 
 
-# ==================== Step 1 ====================
-
 async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
@@ -146,7 +135,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             ql = QwikLabsSession(ctx)
             page = await ql.open_sso(sso_url)
 
-            # 📸 إرسال Screenshot بعد SSO
             shot = await take_screenshot(page, "sso_opened")
             if shot:
                 await send_photo(msg, shot, "📸 بعد فتح SSO")
@@ -157,7 +145,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             )
             email, password = await ql.extract_credentials(page)
 
-            # 📸 إرسال Screenshot بعد الاستخراج
             shot = await take_screenshot(page, "credentials")
             if shot:
                 await send_photo(
@@ -177,7 +164,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             )
 
             if password:
-                # ✅ عندنا email + password → نكملو مباشرة
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n"
@@ -189,7 +175,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
                     job_id, email, password, msg, user.id, context
                 ))
             else:
-                # ❌ ماعندناش password → نسألو
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n\n"
@@ -211,8 +196,6 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             except Exception:
                 pass
 
-
-# ==================== استقبال password ====================
 
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -244,8 +227,6 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ))
 
 
-# ==================== Step 2: النشر ====================
-
 async def run_step2_login(job_id, username, password, msg, user_id, context):
     async with job_lock:
         try:
@@ -260,44 +241,23 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             cc = CloudConsole(page.context)
             console_page = await cc.login(username, password)
 
-            # 📸 إرسال Screenshot بعد تسجيل الدخول
             shot = await take_screenshot(console_page, "after_login")
             if shot:
                 await send_photo(msg, shot, "📸 بعد تسجيل الدخول")
 
             await asyncio.sleep(5)
 
-            # 🔧 محاولة استخراج project_id (متعدد الطرق)
             project_id = await get_project_id(console_page, username)
             if not project_id:
-                # 📸 إرسال Screenshot الفشل
                 shot = await take_screenshot(console_page, "no_project")
                 if shot:
-                    await send_photo(msg, shot, "❌ تعذر استخراج project_id")
-
-                # 🔧 محاولة أخيرة: نروحو لصفحة Home
-                try:
-                    await console_page.goto(
-                        "https://console.cloud.google.com/home/dashboard",
-                        wait_until="domcontentloaded",
+                    await send_photo(
+                        msg, shot,
+                        f"❌ تعذر project_id\nURL: {console_page.url[:200]}"
                     )
-                    await asyncio.sleep(6)
-                    shot2 = await take_screenshot(console_page, "home_dashboard")
-                    if shot2:
-                        await send_photo(msg, shot2, "📸 Home Dashboard")
-
-                    project_id = await get_project_id(console_page, username)
-                    if not project_id:
-                        raise RuntimeError(
-                            f"تعذر استخراج project_id\n"
-                            f"URL: {console_page.url[:200]}"
-                        )
-                except Exception as e2:
-                    raise RuntimeError(
-                        f"تعذر استخراج project_id\n"
-                        f"URL: {console_page.url[:200]}\n"
-                        f"الخطأ: {str(e2)[:150]}"
-                    )
+                raise RuntimeError(
+                    f"تعذر استخراج project_id\nURL: {console_page.url[:200]}"
+                )
 
             await msg.edit_text(
                 f"🚀 *#{job_id}*\n\n"
@@ -332,7 +292,6 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 allow_unauthenticated=True,
             )
 
-            # 📸 Screenshot بعد النشر
             try:
                 await console_page.goto(
                     f"https://console.cloud.google.com/run/detail/"
@@ -384,19 +343,12 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                     pass
 
 
-# ==================== project_id (محسن) ====================
-
 async def get_project_id(page, username: str = None) -> str:
-    """يستخرج project_id بـ 5 طرق"""
-    import re
-
-    # طريقة 1: من URL
     url = page.url
     m = re.search(r'project=([a-z0-9\-]+)', url)
     if m:
         return m.group(1)
 
-    # طريقة 2: من Cloud Resource Manager API
     try:
         pid = await page.evaluate("""
             async () => {
@@ -414,95 +366,24 @@ async def get_project_id(page, username: str = None) -> str:
             }
         """)
         if pid:
-            log.info(f"✅ project_id من API: {pid}")
-            return pid
-    except Exception as e:
-        log.warning(f"فشل API: {e}")
-
-    # طريقة 3: من اسم الـ Lab (qwiklabs-gcp-XX-XXXXX)
-    if username:
-        m = re.search(r'qwiklabs', username.lower())
-        # username format: student-XX-XXXXX@qwiklabs.net
-        # project format: qwiklabs-gcp-XX-XXXXXX
-
-    # طريقة 4: من localStorage
-    try:
-        pid = await page.evaluate("""
-            () => {
-                const el = document.querySelector('[data-project-id]');
-                if (el) return el.getAttribute('data-project-id');
-
-                for (let i = 0; i < localStorage.length; i++) {
-                    const k = localStorage.key(i);
-                    if (k && (k.includes('project') || k.includes('Project'))) {
-                        const v = localStorage.getItem(k);
-                        const m = v && v.match(/qwiklabs-gcp-[a-z0-9\-]+/);
-                        if (m) return m[0];
-                    }
-                }
-
-                // من الـ title
-                const title = document.title;
-                const m = title.match(/qwiklabs-gcp-[a-z0-9\-]+/);
-                if (m) return m[0];
-
-                return null;
-            }
-        """)
-        if pid:
-            log.info(f"✅ project_id من localStorage: {pid}")
-            return pid
-    except Exception as e:
-        log.warning(f"فشل localStorage: {e}")
-
-    # طريقة 5: من Cloud Console API (v3)
-    try:
-        pid = await page.evaluate("""
-            async () => {
-                try {
-                    const res = await fetch(
-                        'https://cloudconsole-pa.clients6.google.com/v3/entities:list?parentId=',
-                        { credentials: 'include' }
-                    );
-                    const text = await res.text();
-                    const m = text.match(/qwiklabs-gcp-[a-z0-9\-]+/);
-                    if (m) return m[0];
-                } catch(e) {}
-                return null;
-            }
-        """)
-        if pid:
-            log.info(f"✅ project_id من Console API: {pid}")
             return pid
     except Exception:
         pass
 
-    # طريقة 6: من أي fetch للـ API
     try:
-        pid = await page.evaluate("""
-            async () => {
-                try {
-                    const res = await fetch(
-                        'https://console.cloud.google.com/apis/credentials',
-                        { credentials: 'include' }
-                    );
-                    const text = await res.text();
-                    const m = text.match(/qwiklabs-gcp-[a-z0-9\-]+/);
-                    if (m) return m[0];
-                } catch(e) {}
-                return null;
-            }
-        """)
-        if pid:
-            log.info(f"✅ project_id من credentials API: {pid}")
-            return pid
+        await page.goto(
+            "https://console.cloud.google.com/home/dashboard",
+            wait_until="domcontentloaded",
+        )
+        await asyncio.sleep(4)
+        m = re.search(r'project=([a-z0-9\-]+)', page.url)
+        if m:
+            return m.group(1)
     except Exception:
         pass
 
     return None
 
-
-# ==================== الأزرار ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
