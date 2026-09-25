@@ -1,9 +1,6 @@
 STEALTH_JS = r"""
-// 1. إخفاء webdriver
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 delete Object.getPrototypeOf(navigator).webdriver;
-
-// 2. اللغات والمنصة
 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
 Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
 Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
@@ -11,7 +8,6 @@ Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
 Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
-// 3. Plugins
 Object.defineProperty(navigator, 'plugins', {
     get: () => {
         const plugins = [
@@ -26,12 +22,11 @@ Object.defineProperty(navigator, 'plugins', {
     }
 });
 
-// 4. MimeTypes
 Object.defineProperty(navigator, 'mimeTypes', {
     get: () => {
         const mimes = [
-            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-            { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'application/pdf', suffixes: 'pdf' },
+            { type: 'text/pdf', suffixes: 'pdf' },
         ];
         mimes.item = (i) => mimes[i];
         mimes.namedItem = (n) => mimes.find(m => m.type === n);
@@ -39,7 +34,6 @@ Object.defineProperty(navigator, 'mimeTypes', {
     }
 });
 
-// 5. WebGL
 const getParameter = WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter = function(parameter) {
     if (parameter === 37445) return 'Intel Inc.';
@@ -53,7 +47,6 @@ WebGL2RenderingContext.prototype.getParameter = function(parameter) {
     return getParameter2.call(this, parameter);
 };
 
-// 6. Permissions
 const originalQuery = window.navigator.permissions.query;
 window.navigator.permissions.query = (parameters) => (
     parameters.name === 'notifications' ?
@@ -61,7 +54,6 @@ window.navigator.permissions.query = (parameters) => (
         originalQuery(parameters)
 );
 
-// 7. Chrome Runtime
 window.chrome = {
     runtime: {},
     loadTimes: function() {},
@@ -81,17 +73,12 @@ window.chrome = {
     }
 };
 
-// 8. Connection
 Object.defineProperty(navigator, 'connection', {
     get: () => ({
-        effectiveType: '4g',
-        rtt: 50,
-        downlink: 10,
-        saveData: false
+        effectiveType: '4g', rtt: 50, downlink: 10, saveData: false
     })
 });
 
-// 9. toString Protection
 const originalToString = Function.prototype.toString;
 Function.prototype.toString = function() {
     if (this === navigator.permissions.query) {
@@ -103,7 +90,6 @@ Function.prototype.toString = function() {
     return originalToString.call(this);
 };
 
-// 10. Screen
 Object.defineProperty(screen, 'width', { get: () => 1920 });
 Object.defineProperty(screen, 'height', { get: () => 1080 });
 Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
@@ -111,7 +97,6 @@ Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
 Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
 Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
 
-// 11. UserAgent Data
 Object.defineProperty(navigator, 'userAgentData', {
     get: () => ({
         brands: [
@@ -124,7 +109,6 @@ Object.defineProperty(navigator, 'userAgentData', {
     })
 });
 
-// 12. Notification
 Object.defineProperty(Notification, 'permission', {
     get: () => 'default'
 });
