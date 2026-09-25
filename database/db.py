@@ -22,8 +22,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
-                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                jobs_count INTEGER DEFAULT 0
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await db.execute("""
@@ -33,11 +32,6 @@ async def init_db():
                 sso_url TEXT,
                 username TEXT,
                 password TEXT,
-                image TEXT,
-                service_name TEXT,
-                region TEXT,
-                memory TEXT,
-                cpu TEXT,
                 state TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -82,14 +76,9 @@ async def register_user(user_id: int, username: str):
         await db.commit()
 
 
-# ===== Sessions =====
-
 async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
                       username: str = None, password: str = None,
-                      image: str = None, service_name: str = None,
-                      region: str = None, memory: str = None,
-                      cpu: str = None, state: str = None):
-    """يحفظ/يحدث الجلسة"""
+                      state: str = None):
     async with aiosqlite.connect(config.DB_PATH) as db:
         cur = await db.execute("SELECT user_id FROM sessions WHERE user_id=?", (user_id,))
         exists = await cur.fetchone()
@@ -100,9 +89,7 @@ async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
             for field, val in [
                 ("job_id", job_id), ("sso_url", sso_url),
                 ("username", username), ("password", password),
-                ("image", image), ("service_name", service_name),
-                ("region", region), ("memory", memory),
-                ("cpu", cpu), ("state", state),
+                ("state", state),
             ]:
                 if val is not None:
                     updates.append(f"{field}=?")
@@ -116,16 +103,14 @@ async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
         else:
             await db.execute(
                 """INSERT INTO sessions 
-                   (user_id, job_id, sso_url, username, password, image, service_name, region, memory, cpu, state)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, job_id, sso_url, username, password, image,
-                 service_name, region, memory, cpu, state)
+                   (user_id, job_id, sso_url, username, password, state)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, job_id, sso_url, username, password, state)
             )
         await db.commit()
 
 
 async def get_session(user_id: int):
-    """يرجع dict بالجلسة كاملة"""
     async with aiosqlite.connect(config.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
