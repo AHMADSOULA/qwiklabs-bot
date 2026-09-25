@@ -1,3 +1,8 @@
+"""
+Stealth configuration for Playwright.
+يستعمل playwright-stealth + custom JS
+"""
+
 STEALTH_JS = r"""
 // ==========================================
 // 1. إخفاء webdriver
@@ -16,7 +21,7 @@ Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
 Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
 // ==========================================
-// 3. Plugins (مهم جداً - Google كتفحصو)
+// 3. Plugins
 // ==========================================
 Object.defineProperty(navigator, 'plugins', {
     get: () => {
@@ -48,7 +53,7 @@ Object.defineProperty(navigator, 'mimeTypes', {
 });
 
 // ==========================================
-// 5. WebGL Vendor/Renderer
+// 5. WebGL
 // ==========================================
 const getParameter = WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter = function(parameter) {
@@ -65,7 +70,7 @@ WebGL2RenderingContext.prototype.getParameter = function(parameter) {
 };
 
 // ==========================================
-// 6. Permissions API
+// 6. Permissions
 // ==========================================
 const originalQuery = window.navigator.permissions.query;
 window.navigator.permissions.query = (parameters) => (
@@ -109,7 +114,7 @@ Object.defineProperty(navigator, 'connection', {
 });
 
 // ==========================================
-// 9. تفادي كشف toString
+// 9. toString Protection
 // ==========================================
 const originalToString = Function.prototype.toString;
 Function.prototype.toString = function() {
@@ -126,16 +131,7 @@ Function.prototype.toString = function() {
 };
 
 // ==========================================
-// 10. تفادي كشف iframe
-// ==========================================
-Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-    get: function() {
-        return window;
-    }
-});
-
-// ==========================================
-// 11. Screen properties
+// 10. Screen
 // ==========================================
 Object.defineProperty(screen, 'width', { get: () => 1920 });
 Object.defineProperty(screen, 'height', { get: () => 1080 });
@@ -145,16 +141,40 @@ Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
 Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
 
 // ==========================================
-// 12. تفادي كشف Headless من خلال userAgent
+// 11. UserAgent Data
 // ==========================================
-Object.defineProperty(navigator, 'userAgent', {
-    get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+Object.defineProperty(navigator, 'userAgentData', {
+    get: () => ({
+        brands: [
+            { brand: 'Not_A Brand', version: '8' },
+            { brand: 'Chromium', version: '131' },
+            { brand: 'Google Chrome', version: '131' },
+        ],
+        mobile: false,
+        platform: 'Windows',
+    })
 });
 
 // ==========================================
-// 13. Notification permission
+// 12. Notification
 // ==========================================
 Object.defineProperty(Notification, 'permission', {
     get: () => 'default'
 });
+
+// ==========================================
+// 13. تفادي iframe
+// ==========================================
+try {
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: function() {
+            return window;
+        }
+    });
+} catch(e) {}
+
+// ==========================================
+// 14. Firefox detection
+// ==========================================
+Object.defineProperty(window, 'mozInnerScreenX', { get: () => undefined });
 """
