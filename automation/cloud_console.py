@@ -28,7 +28,6 @@ class CloudConsole:
         await human_delay(3, 5)
         await take_screenshot(page, "cc_loaded")
 
-        # ✅ حلقة قصيرة: 10 خطوات كحد أقصى
         for step in range(10):
             self.step_count = step + 1
             log.info(f"═══ خطوة {step + 1}/10 ═══")
@@ -51,11 +50,10 @@ class CloudConsole:
                     await human_delay(10, 15)
                     continue
                 else:
-                    # ❌ ما قدرناش → توقف
                     await self._raise_problem(
                         page,
                         "🔴 فشل التعامل مع Speedbump/TOS",
-                        "الصفحة طلبت Terms of Service، ولكن ما قدرناش نضغط على checkbox/continue"
+                        "الصفحة طلبت Terms of Service، ولكن ما قدرناش نضغط على checkbox/continue/accept"
                     )
 
             # ✅ 3. CAPTCHA
@@ -80,7 +78,7 @@ class CloudConsole:
                         await self._raise_problem(
                             page,
                             "🔴 CAPTCHA ما تحلّتش",
-                            "ما قدرناش نحلو CAPTCHA (يدوي/TrueCaptcha)"
+                            "ما قدرناش نحلو CAPTCHA"
                         )
             except Exception as e:
                 log.warning(f"CAPTCHA: {e}")
@@ -111,7 +109,7 @@ class CloudConsole:
                 await self._raise_problem(
                     page,
                     "🔴 Google كتطلب verify (2FA)",
-                    "Google كتطلب تأكيد الهاتف/الإيميل — الحل: تسجيل يدوي أول مرة"
+                    "Google كتطلب تأكيد الهاتف/الإيميل"
                 )
 
             # ✅ 6. كلمة سر غلط؟
@@ -119,35 +117,26 @@ class CloudConsole:
                 await self._raise_problem(
                     page,
                     "🔴 كلمة السر غلط",
-                    "Google رفضت كلمة السر — جدد الرابط من Skills"
+                    "Google رفضت كلمة السر — جدد الرابط"
                 )
 
-            # ✅ 7. صفحة غير معروفة → نستنى مرة
+            # ✅ 7. صفحة غير معروفة
             log.warning(f"❓ صفحة: {page.url[:100]}")
             await human_delay(5, 8)
 
-        # ❌ انتهت 10 خطوات بلا نتيجة
         await self._raise_problem(
             page,
             "🔴 فشل بعد 10 خطوات",
             f"البوت ما قدرش يوصل للـ Console\nURL: {page.url[:200]}"
         )
 
-    # ==================== Raise Problem (توقف + تقرير) ====================
+    # ==================== Raise Problem ====================
 
     async def _raise_problem(self, page, title: str, details: str):
-        """
-        يتوقف فوراً ويرسل تقرير كامل.
-        """
         log.error(f"❌ {title}: {details}")
-
-        # 📸 Screenshot أخير
         shot = await take_screenshot(page, "problem")
-
-        # ✅ نجمع كل المعلومات
         info = await self._collect_problem_info(page)
 
-        # ✅ نبني رسالة
         msg = f"""{title}
 
 📋 *التفاصيل:*
@@ -168,37 +157,27 @@ class CloudConsole:
 📝 *Inputs:*
 {info.get('inputs', [])}
 
-🖼️ *Images:*
-{info.get('images', [])}
-
-⏱️ *الخطوات اللي تمت:* {self.step_count}/10
+⏱️ *الخطوات:* {self.step_count}/10
 🔄 *CAPTCHA:* {self.captcha_count}/3
 """
 
-        # ✅ نرسل للمستخدم
         if self.sender:
             try:
                 await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
             except Exception:
                 await self.sender.reply_text(msg[:4000])
 
-            # 📸 نرسل الصورة
             if shot:
                 try:
                     from telegram import InputFile
                     with open(shot, "rb") as f:
-                        await self.sender.reply_photo(
-                            photo=InputFile(f),
-                            caption=f"📸 {title}"
-                        )
+                        await self.sender.reply_photo(photo=InputFile(f), caption=f"📸 {title}")
                 except Exception:
                     pass
 
-        # ✅ نرفع exception
         raise RuntimeError(f"{title}\n{details}")
 
     async def _collect_problem_info(self, page) -> dict:
-        """يجمع كل المعلومات عن المشكل"""
         try:
             return await page.evaluate("""
                 () => {
@@ -209,41 +188,19 @@ class CloudConsole:
                         buttons: [],
                         checkboxes: [],
                         inputs: [],
-                        images: [],
                     };
-                    // Buttons
                     for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
                         if (b.offsetParent === null) continue;
                         const t = (b.innerText || b.value || '').trim();
                         if (t && t.length < 60) r.buttons.push(t);
                     }
-                    // Checkboxes
                     for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
                         if (cb.offsetParent === null) continue;
-                        r.checkboxes.push({
-                            name: cb.name || '',
-                            id: cb.id || '',
-                            checked: cb.checked,
-                        });
+                        r.checkboxes.push({name: cb.name || '', id: cb.id || '', checked: cb.checked});
                     }
-                    // Inputs
                     for (const inp of document.querySelectorAll('input')) {
                         if (inp.offsetParent === null) continue;
-                        r.inputs.push({
-                            type: inp.type || '',
-                            name: inp.name || '',
-                            id: inp.id || '',
-                        });
-                    }
-                    // Images
-                    for (const img of document.querySelectorAll('img')) {
-                        if (img.offsetParent === null) continue;
-                        const s = (img.src || '').toLowerCase();
-                        if (s.includes('captcha')) {
-                            r.images.push('CAPTCHA');
-                        } else if (s.length > 0) {
-                            r.images.push(s.substring(0, 50));
-                        }
+                        r.inputs.push({type: inp.type || '', name: inp.name || '', id: inp.id || ''});
                     }
                     return r;
                 }
@@ -251,14 +208,7 @@ class CloudConsole:
         except Exception as e:
             return {"error": str(e)}
 
-    # ==================== Helpers ====================
-
-    async def _has_wrong_password(self, page) -> bool:
-        try:
-            c = (await page.content()).lower()
-            return 'incorrect password' in c or 'wrong password' in c
-        except Exception:
-            return False
+    # ==================== Speedbump / TOS ====================
 
     async def _is_speedbump_or_tos(self, page) -> bool:
         url = page.url.lower()
@@ -276,13 +226,42 @@ class CloudConsole:
 
     async def _handle_speedbump(self, page) -> bool:
         log.info("🔍 نحلل صفحة Speedbump...")
+        await human_delay(5, 8)
 
-        # Country
+        # ✅ نسجل العناصر
+        try:
+            info = await page.evaluate("""
+                () => {
+                    const r = { buttons: [], checkboxes: [], selects: [], iframes: 0 };
+                    for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
+                        if (b.offsetParent === null) continue;
+                        const t = (b.innerText || b.value || '').trim();
+                        if (t && t.length < 100) r.buttons.push({text: t.substring(0, 60), tag: b.tagName});
+                    }
+                    for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                        if (cb.offsetParent === null) continue;
+                        r.checkboxes.push({name: cb.name, id: cb.id, checked: cb.checked});
+                    }
+                    for (const s of document.querySelectorAll('select')) {
+                        if (s.offsetParent === null) continue;
+                        r.selects.push({name: s.name, value: s.value});
+                    }
+                    r.iframes = document.querySelectorAll('iframe').length;
+                    return r;
+                }
+            """)
+            log.info(f"📋 Buttons: {info.get('buttons')}")
+            log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
+            log.info(f"📋 Selects: {info.get('selects')}")
+            log.info(f"📋 iframes: {info.get('iframes')}")
+        except Exception as e:
+            log.warning(f"فشل تحليل: {e}")
+
+        # ✅ Country
         try:
             sel = page.locator('select').first
             if await sel.count() > 0 and await sel.is_visible():
                 current = await sel.input_value()
-                log.info(f"🌍 Country: {current}")
                 if not current:
                     try:
                         await sel.select_option(label="United States")
@@ -292,7 +271,7 @@ class CloudConsole:
         except Exception:
             pass
 
-        # Checkbox
+        # ✅ Checkbox
         try:
             result = await page.evaluate("""
                 () => {
@@ -313,53 +292,149 @@ class CloudConsole:
             if result:
                 log.info(f"✅ checkbox: {result}")
                 await human_delay(2, 3)
-        except Exception as e:
-            log.warning(f"checkbox: {e}")
+        except Exception:
+            pass
 
-        # Continue
-        await human_delay(2, 3)
-        try:
-            clicked = await page.evaluate("""
-                async () => {
-                    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                    const kws = ['continue', 'agree', 'accept', 'submit', 'ok', 'yes', 'i agree'];
-                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
-                        if (el.offsetParent === null) continue;
-                        if (el.disabled) continue;
-                        const t = (el.innerText || el.value || '').trim().toLowerCase();
-                        if (!t || t.length > 100) continue;
-                        for (const kw of kws) {
-                            if (t === kw || t.includes(kw)) {
+        await human_delay(3, 5)
+
+        # ✅ 5 طرق للضغط
+        for method in range(1, 6):
+            log.info(f"🔘 طريقة {method}/5")
+
+            # طريقة 1: JS click
+            try:
+                clicked = await page.evaluate("""
+                    async () => {
+                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                        const kws = ['accept', 'i accept', 'continue', 'agree', 'i agree',
+                                     'submit', 'ok', 'yes', 'understood', 'got it'];
+                        const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
+                        // exact
+                        for (const el of all) {
+                            if (el.offsetParent === null || el.disabled) continue;
+                            const t = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (!t || t.length > 100) continue;
+                            for (const kw of kws) {
+                                if (t === kw) {
+                                    el.scrollIntoView({block: 'center'});
+                                    el.focus();
+                                    await sleep(300);
+                                    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    el.click();
+                                    return { clicked: t, method: 'exact' };
+                                }
+                            }
+                        }
+                        // includes
+                        for (const el of all) {
+                            if (el.offsetParent === null || el.disabled) continue;
+                            const t = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (!t || t.length > 100) continue;
+                            for (const kw of kws) {
+                                if (t.includes(kw)) {
+                                    el.scrollIntoView({block: 'center'});
+                                    el.focus();
+                                    await sleep(300);
+                                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    el.click();
+                                    return { clicked: t, method: 'includes' };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked:
+                    log.info(f"✅ طريقة {method}: {clicked}")
+                    await human_delay(5, 8)
+                    return True
+            except Exception as e:
+                log.warning(f"طريقة {method}: {e}")
+
+            # طريقة 2: Blue button
+            try:
+                clicked = await page.evaluate("""
+                    async () => {
+                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                        for (const el of document.querySelectorAll('button, input[type="submit"]')) {
+                            if (el.offsetParent === null || el.disabled) continue;
+                            const bg = window.getComputedStyle(el).backgroundColor;
+                            if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
+                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)') {
                                 el.scrollIntoView({block: 'center'});
                                 el.focus();
                                 await sleep(300);
-                                el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-                                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                                el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-                                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                                el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                                 el.click();
-                                return { clicked: t.substring(0, 50) };
+                                return { text: (el.innerText || '').substring(0, 50), bg };
                             }
                         }
+                        return null;
                     }
-                    return null;
-                }
-            """)
-            if clicked:
-                log.info(f"✅ continue: {clicked}")
-                await human_delay(5, 8)
-                return True
-        except Exception as e:
-            log.warning(f"continue: {e}")
+                """)
+                if clicked:
+                    log.info(f"✅ Blue button: {clicked}")
+                    await human_delay(5, 8)
+                    return True
+            except Exception:
+                pass
+
+            # طريقة 3: Playwright
+            for sel in [
+                'button:has-text("Accept")',
+                'button:has-text("I accept")',
+                'button:has-text("Continue")',
+                'button:has-text("Agree")',
+                'button:has-text("I agree")',
+                'a:has-text("Accept")',
+                'div[role="button"]:has-text("Accept")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0 and await el.is_visible() and not await el.is_disabled():
+                        log.info(f"✅ Playwright: {sel}")
+                        try:
+                            await el.click(timeout=3000)
+                        except Exception:
+                            await el.click(force=True, timeout=3000)
+                        await human_delay(5, 8)
+                        return True
+                except Exception:
+                    continue
+
+            # طريقة 4: آخر زر visible
+            try:
+                clicked = await page.evaluate("""
+                    () => {
+                        const all = document.querySelectorAll('button, input[type="submit"]');
+                        const visible = Array.from(all).filter(b => b.offsetParent !== null && !b.disabled);
+                        if (visible.length > 0) {
+                            const last = visible[visible.length - 1];
+                            last.click();
+                            return { clicked: 'last', text: (last.innerText || '').substring(0, 50) };
+                        }
+                        return null;
+                    }
+                """)
+                if clicked:
+                    log.info(f"✅ Last button: {clicked}")
+                    await human_delay(5, 8)
+                    return True
+            except Exception:
+                pass
+
+            await human_delay(2, 3)
 
         return False
 
+    # ==================== Sign In ====================
+
     async def _do_signin(self, page) -> str:
-        """يرجع 'ok' أو سبب الفشل"""
         await take_screenshot(page, "cc_before_signin")
 
-        # EMAIL
         email_ok = False
         for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="text"]']:
             try:
@@ -392,7 +467,7 @@ class CloudConsole:
         await human_delay(5, 8)
         await take_screenshot(page, "cc_after_email")
 
-        # CAPTCHA بعد email
+        # CAPTCHA
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page) and self.captcha_count < 3:
@@ -405,7 +480,6 @@ class CloudConsole:
         except Exception:
             pass
 
-        # PASSWORD
         await human_delay(3, 5)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -435,7 +509,7 @@ class CloudConsole:
                 continue
 
         if not pwd_ok:
-            return "ما لقيناش/ما قدرناش نكتب حقل password بعد email"
+            return "ما لقيناش/ما قدرناش نكتب password"
 
         await self._click_next(page, "password")
         await human_delay(8, 12)
@@ -482,3 +556,10 @@ class CloudConsole:
         except Exception:
             pass
         return False
+
+    async def _has_wrong_password(self, page) -> bool:
+        try:
+            c = (await page.content()).lower()
+            return 'incorrect password' in c or 'wrong password' in c
+        except Exception:
+            return False
