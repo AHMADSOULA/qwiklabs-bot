@@ -1,6 +1,17 @@
+"""
+STEALTH_JS — إخفاء المتصفح من Google
+"""
+
 STEALTH_JS = r"""
+// ==========================================
+// 1. إخفاء webdriver
+// ==========================================
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 delete Object.getPrototypeOf(navigator).webdriver;
+
+// ==========================================
+// 2. اللغات والمنصة
+// ==========================================
 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
 Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
 Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
@@ -8,12 +19,15 @@ Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
 Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
+// ==========================================
+// 3. Plugins (مهم جداً)
+// ==========================================
 Object.defineProperty(navigator, 'plugins', {
     get: () => {
         const plugins = [
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
         ];
         plugins.refresh = () => {};
         plugins.item = (i) => plugins[i];
@@ -22,11 +36,14 @@ Object.defineProperty(navigator, 'plugins', {
     }
 });
 
+// ==========================================
+// 4. MimeTypes
+// ==========================================
 Object.defineProperty(navigator, 'mimeTypes', {
     get: () => {
         const mimes = [
-            { type: 'application/pdf', suffixes: 'pdf' },
-            { type: 'text/pdf', suffixes: 'pdf' },
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
         ];
         mimes.item = (i) => mimes[i];
         mimes.namedItem = (n) => mimes.find(m => m.type === n);
@@ -34,12 +51,16 @@ Object.defineProperty(navigator, 'mimeTypes', {
     }
 });
 
+// ==========================================
+// 5. WebGL Vendor/Renderer
+// ==========================================
 const getParameter = WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter = function(parameter) {
     if (parameter === 37445) return 'Intel Inc.';
     if (parameter === 37446) return 'Intel Iris OpenGL Engine';
     return getParameter.call(this, parameter);
 };
+
 const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
 WebGL2RenderingContext.prototype.getParameter = function(parameter) {
     if (parameter === 37445) return 'Intel Inc.';
@@ -47,6 +68,9 @@ WebGL2RenderingContext.prototype.getParameter = function(parameter) {
     return getParameter2.call(this, parameter);
 };
 
+// ==========================================
+// 6. Permissions API
+// ==========================================
 const originalQuery = window.navigator.permissions.query;
 window.navigator.permissions.query = (parameters) => (
     parameters.name === 'notifications' ?
@@ -54,6 +78,9 @@ window.navigator.permissions.query = (parameters) => (
         originalQuery(parameters)
 );
 
+// ==========================================
+// 7. Chrome Runtime
+// ==========================================
 window.chrome = {
     runtime: {},
     loadTimes: function() {},
@@ -73,12 +100,21 @@ window.chrome = {
     }
 };
 
+// ==========================================
+// 8. Connection
+// ==========================================
 Object.defineProperty(navigator, 'connection', {
     get: () => ({
-        effectiveType: '4g', rtt: 50, downlink: 10, saveData: false
+        effectiveType: '4g',
+        rtt: 50,
+        downlink: 10,
+        saveData: false
     })
 });
 
+// ==========================================
+// 9. toString Protection
+// ==========================================
 const originalToString = Function.prototype.toString;
 Function.prototype.toString = function() {
     if (this === navigator.permissions.query) {
@@ -90,6 +126,9 @@ Function.prototype.toString = function() {
     return originalToString.call(this);
 };
 
+// ==========================================
+// 10. Screen
+// ==========================================
 Object.defineProperty(screen, 'width', { get: () => 1920 });
 Object.defineProperty(screen, 'height', { get: () => 1080 });
 Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
@@ -97,6 +136,9 @@ Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
 Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
 Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
 
+// ==========================================
+// 11. UserAgent Data
+// ==========================================
 Object.defineProperty(navigator, 'userAgentData', {
     get: () => ({
         brands: [
@@ -109,7 +151,63 @@ Object.defineProperty(navigator, 'userAgentData', {
     })
 });
 
+// ==========================================
+// 12. Notification
+// ==========================================
 Object.defineProperty(Notification, 'permission', {
     get: () => 'default'
 });
+
+// ==========================================
+// 13. تفادي iframe
+// ==========================================
+try {
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: function() {
+            return window;
+        }
+    });
+} catch(e) {}
+
+// ==========================================
+// 14. Firefox detection
+// ==========================================
+Object.defineProperty(window, 'mozInnerScreenX', { get: () => undefined });
+
+// ==========================================
+// 15. Chrome CSI
+// ==========================================
+if (!window.chrome.csi) {
+    window.chrome.csi = function() {
+        return {
+            onloadT: Date.now(),
+            startE: Date.now(),
+            pageT: 1000,
+            tran: 15
+        };
+    };
+}
+
+// ==========================================
+// 16. Chrome loadTimes
+// ==========================================
+if (!window.chrome.loadTimes) {
+    window.chrome.loadTimes = function() {
+        return {
+            commitLoadTime: Date.now() / 1000,
+            connectionInfo: 'h2',
+            finishDocumentLoadTime: Date.now() / 1000,
+            finishLoadTime: Date.now() / 1000,
+            firstPaintAfterLoadTime: 0,
+            firstPaintTime: Date.now() / 1000,
+            navigationType: 'Other',
+            npnNegotiatedProtocol: 'h2',
+            requestTime: Date.now() / 1000,
+            startLoadTime: Date.now() / 1000,
+            wasAlternateProtocolAvailable: false,
+            wasFetchedViaSpdy: true,
+            wasNpnNegotiated: true,
+        };
+    };
+}
 """
