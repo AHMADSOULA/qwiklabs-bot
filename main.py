@@ -19,14 +19,26 @@ async def post_init(app):
 async def route_text(update, context):
     from database import db
     from utils.helpers import extract_urls
+    from automation.captcha_solver import set_captcha_solution, PENDING_CAPTCHA
 
     user = update.effective_user
     text = update.message.text or ""
 
+    # ✅ 1. إذا في انتظار CAPTCHA → هذا هو الحل
+    if user.id in PENDING_CAPTCHA and PENDING_CAPTCHA[user.id].get("waiting"):
+        set_captcha_solution(user.id, text)
+        await update.message.reply_text(
+            f"✅ تم استلام الحل: `{text}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # ✅ 2. إذا فيها URL → SSO
     if extract_urls(text):
         await handlers.handle_url(update, context)
         return
 
+    # ✅ 3. جلسة؟ → password
     session = await db.get_session(user.id)
     if session and session.get("state") == "waiting_password":
         await handlers.handle_password(update, context)
