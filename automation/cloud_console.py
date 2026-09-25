@@ -13,8 +13,6 @@ class CloudConsole:
         self.password = None
         self.user_id = None
         self.sender = None
-        self.welcome_page_seen = False
-        self.tos_clicked = False
         self.captcha_solved_count = 0
 
     async def login(self, username: str, password: str,
@@ -31,9 +29,10 @@ class CloudConsole:
         await take_screenshot(page, "cc_01_loaded")
         log.info(f"URL: {page.url}")
 
-        for attempt in range(12):
+        # ✅ حلقة بسيطة: 8 محاولات
+        for attempt in range(8):
             log.info(f"========== محاولة {attempt + 1} ==========")
-            await human_delay(2, 4)
+            await human_delay(2, 3)
             await take_screenshot(page, f"cc_attempt_{attempt}")
             current_url = page.url
             log.info(f"URL: {current_url}")
@@ -41,10 +40,16 @@ class CloudConsole:
             # ✅ 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ وصلنا للـ Console!")
-                await self._wait_for_console(page, timeout=30000)
+                await human_delay(3, 5)
                 return page
 
-            # ✅ 2. CAPTCHA
+            # ✅ 2. Dialog (Terms of Service) — جديد
+            if await self._handle_gcloud_dialog(page):
+                log.info("✅ تم التعامل مع Dialog")
+                await human_delay(5, 8)
+                continue
+
+            # ✅ 3. CAPTCHA (ذكي — max 3 مرات)
             try:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 if await has_captcha(page):
@@ -58,52 +63,6 @@ class CloudConsole:
                             continue
             except Exception as e:
                 log.warning(f"CAPTCHA: {e}")
-
-            # ✅ 3. Welcome / TOS / Speedbump?
-            if await self._is_welcome_page(page):
-                log.info("📋 صفحة Welcome/TOS/Speedbump")
-
-                # ✅ أول مرة: نستنى + نضغط
-                if not self.welcome_page_seen:
-                    log.info("🆕 أول مرة — نستنى 15 ثانية باش الصفحة تكمل")
-                    self.welcome_page_seen = True
-                    await human_delay(15, 20)
-                    await take_screenshot(page, "cc_welcome_loaded")
-                    log.info("📸 صفحة تحملت — نضغط 'I understand'")
-
-                    clicked = await self._click_i_understand(page)
-                    if clicked:
-                        self.tos_clicked = True
-                        log.info("✅ ضغطنا — نستنى 20 ثانية")
-                        await human_delay(20, 25)
-                        continue
-                    else:
-                        log.warning("⚠️ ما لقيتش الزر")
-                        await human_delay(5, 8)
-                        continue
-
-                # ✅ إذا ضغطنا قبل — نستنى + نعاود
-                if self.tos_clicked:
-                    log.info("⏳ ضغطنا قبل — نستنى...")
-                    await human_delay(15, 20)
-
-                    new_url = page.url.lower()
-                    if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
-                        log.info("🎉 خرجنا من TOS!")
-                        self.tos_clicked = False
-                        self.welcome_page_seen = False
-                        continue
-                    else:
-                        log.warning("⚠️ مازال فـ TOS — نعاود نجربو")
-                        # ✅ نعاود نضغط مع كل الأحداث
-                        clicked = await self._click_i_understand(page)
-                        if clicked:
-                            log.info("✅ ضغطنا مرة أخرى")
-                            await human_delay(20, 25)
-                        else:
-                            await human_delay(10, 15)
-                        continue
-                continue
 
             # ✅ 4. Sign in?
             if await self._is_signin_page(page):
@@ -128,170 +87,157 @@ class CloudConsole:
                 raise RuntimeError("❌ كلمة السر غلط")
 
             log.warning(f"❓ صفحة غير معروفة: {current_url[:100]}")
-            await human_delay(5, 8)
+            await human_delay(3, 5)
 
         await take_screenshot(page, "cc_final_fail")
-        raise RuntimeError(f"❌ فشل بعد 12 محاولات\nURL: {page.url[:200]}")
+        raise RuntimeError(f"❌ فشل بعد 8 محاولات\nURL: {page.url[:200]}")
 
-    # ==================== Click "I understand" بـ 5 أحداث ====================
+    # ==================== Dialog (Terms of Service الجديد) ====================
 
-    async def _click_i_understand(self, page) -> bool:
+    async def _handle_gcloud_dialog(self, page) -> bool:
         """
-        يضغط على زر "I understand" بـ 5 أحداث (Google Material Button).
+        يتعامل مع Dialog Terms of Service الجديد:
+        1. يضغط على checkbox (☐ I agree...)
+        2. يضغط على Continue
         """
-        log.info("🔍 نبحث عن زر 'I understand'...")
-
-        # ✅ نسجل الأزرار
         try:
-            buttons = await page.evaluate("""
+            # ✅ نفحصو واش كاين Dialog
+            has_dialog = await page.evaluate("""
                 () => {
-                    const all = document.querySelectorAll('button, a, [role="button"]');
-                    return Array.from(all).map((el, i) => ({
-                        idx: i,
-                        tag: el.tagName,
-                        text: (el.innerText || el.value || '').trim().substring(0, 60),
-                        visible: el.offsetParent !== null,
-                        disabled: el.disabled || false,
-                        cls: (el.className || '').toString().substring(0, 60),
-                    })).filter(b => b.visible && !b.disabled && b.text);
+                    // نلقاو dialogs
+                    const dialogs = document.querySelectorAll(
+                        '[role="dialog"], .modal, [role="alertdialog"], mat-dialog-container'
+                    );
+                    for (const d of dialogs) {
+                        if (d.offsetParent === null) continue;
+                        const text = (d.innerText || '').toLowerCase();
+                        if (text.includes('i agree') || text.includes('terms of service') ||
+                            text.includes('welcome student') ||
+                            text.includes('agree to the google cloud')) {
+                            return true;
+                        }
+                    }
+                    // ✅ نتحققو من وجود checkbox
+                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                    for (const cb of checkboxes) {
+                        if (cb.offsetParent === null) continue;
+                        return true;
+                    }
+                    return false;
                 }
             """)
-            log.info(f"🔍 الأزرار: {buttons}")
-        except Exception:
-            pass
 
-        # ✅ نضغط بكل الأحداث (Google Material)
-        try:
-            clicked = await page.evaluate("""
-                async () => {
-                    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            if not has_dialog:
+                return False
 
-                    function findBtn() {
-                        const all = document.querySelectorAll('button, a, [role="button"]');
-                        // exact "I understand"
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (t === 'i understand') return el;
-                        }
-                        // includes "understand"
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (t.includes('understand')) return el;
-                        }
-                        // accept / agree
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (t === 'accept' || t === 'agree' || t === 'i agree') return el;
+            log.info("🔍 لقيت Dialog — نحاول نضغط checkbox + Continue")
+
+            # ✅ 1. نضغطو على checkbox
+            try:
+                clicked_cb = await page.evaluate("""
+                    () => {
+                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                        for (const cb of checkboxes) {
+                            if (cb.offsetParent === null) continue;
+                            if (cb.checked) return { already: true };
+                            
+                            // ✅ scroll + focus
+                            cb.scrollIntoView({block: 'center'});
+                            cb.focus();
+                            
+                            // ✅ نلقاو الـ label
+                            const label = cb.closest('label');
+                            if (label) {
+                                label.click();
+                            } else {
+                                cb.click();
+                            }
+                            cb.dispatchEvent(new Event('change', { bubbles: true }));
+                            cb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                            
+                            return {
+                                name: cb.name || '',
+                                id: cb.id || '',
+                                checked: cb.checked,
+                            };
                         }
                         return null;
                     }
+                """)
+                if clicked_cb:
+                    log.info(f"✅ checkbox: {clicked_cb}")
+                    await human_delay(1, 2)
+            except Exception as e:
+                log.warning(f"فشل checkbox: {e}")
 
-                    const btn = findBtn();
-                    if (!btn) return { error: 'not_found' };
-
-                    const text = (btn.innerText || btn.value || '').trim();
-
-                    // ✅ scroll للزر
-                    btn.scrollIntoView({block: 'center'});
-                    await sleep(500);
-
-                    // ✅ 1. focus
-                    btn.focus();
-                    await sleep(200);
-
-                    // ✅ 2. pointerdown
-                    btn.dispatchEvent(new PointerEvent('pointerdown', {
-                        bubbles: true, cancelable: true, view: window,
-                        pointerType: 'mouse', button: 0
-                    }));
-                    await sleep(100);
-
-                    // ✅ 3. mousedown
-                    btn.dispatchEvent(new MouseEvent('mousedown', {
-                        bubbles: true, cancelable: true, view: window, button: 0
-                    }));
-                    await sleep(100);
-
-                    // ✅ 4. pointerup
-                    btn.dispatchEvent(new PointerEvent('pointerup', {
-                        bubbles: true, cancelable: true, view: window,
-                        pointerType: 'mouse', button: 0
-                    }));
-                    await sleep(100);
-
-                    // ✅ 5. mouseup
-                    btn.dispatchEvent(new MouseEvent('mouseup', {
-                        bubbles: true, cancelable: true, view: window, button: 0
-                    }));
-                    await sleep(100);
-
-                    // ✅ 6. click
-                    btn.dispatchEvent(new MouseEvent('click', {
-                        bubbles: true, cancelable: true, view: window, button: 0
-                    }));
-                    await sleep(200);
-
-                    // ✅ 7. click() مباشر
-                    btn.click();
-
-                    return {
-                        clicked: text,
-                        tag: btn.tagName,
-                        method: '5_events',
-                        cls: (btn.className || '').toString().substring(0, 60),
-                    };
-                }
-            """)
-            if clicked and clicked.get("clicked"):
-                log.info(f"✅ 5-event click: {clicked}")
-                return True
-            elif clicked and clicked.get("error"):
-                log.warning(f"⚠️ {clicked['error']}")
-        except Exception as e:
-            log.warning(f"JS: {e}")
-
-        # ✅ Playwright احتياطي (3 طرق)
-        for sel in [
-            'button:has-text("I understand")',
-            'button:has-text("Accept")',
-            '[role="button"]:has-text("I understand")',
-        ]:
+            # ✅ 2. نضغطو على Continue
             try:
-                el = page.locator(sel).first
-                if await el.count() == 0:
-                    continue
-                if not await el.is_visible():
+                clicked_btn = await page.evaluate("""
+                    async () => {
+                        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+                        const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
+                        const keywords = ['continue', 'agree', 'accept', 'i agree',
+                                        'agree and continue', 'submit', 'ok', 'yes'];
+                        for (const el of all) {
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const t = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (!t || t.length > 100) continue;
+                            for (const kw of keywords) {
+                                if (t === kw || t.includes(kw)) {
+                                    el.scrollIntoView({block: 'center'});
+                                    el.focus();
+                                    await sleep(200);
+                                    // ✅ 5 أحداث (Google Material)
+                                    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    el.click();
+                                    return {
+                                        clicked: t.substring(0, 50),
+                                        tag: el.tagName,
+                                    };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked_btn:
+                    log.info(f"✅ Continue: {clicked_btn}")
+                    await human_delay(5, 8)
+                    return True
+            except Exception as e:
+                log.warning(f"فشل Continue: {e}")
+
+            # ✅ 3. Playwright احتياطي
+            for sel in [
+                'button:has-text("Continue")',
+                'button:has-text("Agree and continue")',
+                'button:has-text("I agree")',
+                'button:has-text("Accept")',
+                '[role="dialog"] button:has-text("Continue")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() == 0:
+                        continue
+                    if not await el.is_visible():
+                        continue
+                    log.info(f"✅ Playwright: {sel}")
+                    await el.click(timeout=5000)
+                    await human_delay(5, 8)
+                    return True
+                except Exception:
                     continue
 
-                log.info(f"✅ Playwright: {sel}")
-                # طريقة 1: click عادي
-                try:
-                    await el.click(timeout=3000)
-                    return True
-                except Exception:
-                    pass
-                # طريقة 2: force
-                try:
-                    await el.click(force=True, timeout=3000)
-                    return True
-                except Exception:
-                    pass
-                # طريقة 3: dispatch_event
-                try:
-                    await el.dispatch_event("click")
-                    return True
-                except Exception:
-                    pass
-            except Exception:
-                continue
-
-        return False
+            return False
+        except Exception as e:
+            log.warning(f"فشل Dialog: {e}")
+            return False
 
     # ==================== Helpers ====================
 
@@ -301,28 +247,6 @@ class CloudConsole:
             return text[:max_len].replace('\n', ' | ')
         except Exception:
             return ""
-
-    async def _is_welcome_page(self, page) -> bool:
-        url = page.url.lower()
-        if "workspacetermsofservice" in url or "speedbump" in url:
-            return True
-        text = (await self._get_body_text(page)).lower()
-        if "welcome to your new account" in text:
-            return True
-        if "terms of service" in text and "i understand" in text:
-            return True
-        try:
-            for sel in [
-                'button:has-text("I understand")',
-                'button:has-text("Accept")',
-                'button:has-text("I agree")',
-            ]:
-                el = page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    return True
-        except Exception:
-            pass
-        return False
 
     async def _has_wrong_password_error(self, page) -> bool:
         try:
@@ -364,6 +288,8 @@ class CloudConsole:
             except Exception:
                 pass
         return False
+
+    # ==================== Sign In ====================
 
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
@@ -408,6 +334,7 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
+        # ✅ CAPTCHA بعد email
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page) and self.captcha_solved_count < 3:
@@ -481,19 +408,3 @@ class CloudConsole:
                     return
             except Exception:
                 continue
-
-    async def _wait_for_console(self, page, timeout: int = 60000):
-        try:
-            await page.wait_for_function(
-                """() => {
-                    const url = window.location.href;
-                    return url.includes('console.cloud.google.com') &&
-                           !url.includes('signin') &&
-                           !url.includes('accounts.google.com');
-                }""",
-                timeout=timeout,
-            )
-        except Exception:
-            log.warning("Timeout Console")
-        await human_delay(3, 5)
-        await take_screenshot(page, "cc_console_ready")
