@@ -2,7 +2,6 @@ FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
 
 WORKDIR /app
 
-# تحديث + تثبيت Chrome
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget curl ca-certificates gnupg && \
@@ -12,14 +11,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# تثبيت مكتبات Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ المشروع
 COPY . .
 
-# إنشاء المجلدات
 RUN mkdir -p /app/data /app/logs /app/data/screenshots
 
 CMD ["python", "main.py"]
