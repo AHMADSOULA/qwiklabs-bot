@@ -14,6 +14,7 @@ class CloudConsole:
         self.user_id = None
         self.sender = None
         self.welcome_clicked = False
+        self.captcha_solved = 0
 
     async def login(self, username: str, password: str,
                     user_id: int = None, sender=None, context=None):
@@ -24,106 +25,123 @@ class CloudConsole:
 
         page = await self.context.new_page()
         log.info("تسجيل الدخول...")
+
+        # ✅ انتظار طويل قبل البدء
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
-        await human_delay(3, 5)
+        log.info("⏳ نستنى 8s باش الصفحة تكمل...")
+        await human_delay(8, 12)
         await take_screenshot(page, "cc_01_loaded")
         log.info(f"URL: {page.url}")
 
         try:
-            for attempt in range(5):
-                log.info(f"===== محاولة {attempt + 1} =====")
-                await human_delay(2, 3)
-                await take_screenshot(page, f"cc_iter_{attempt}")
+            for attempt in range(6):
+                log.info(f"========== محاولة {attempt + 1} ==========")
+                await human_delay(3, 5)
+                await take_screenshot(page, f"cc_attempt_{attempt}")
                 log.info(f"URL: {page.url}")
 
+                # ============================================
                 # ✅ 1. Console ready?
+                # ============================================
                 if await self._is_console_ready(page):
-                    log.info(f"✅ وصلنا للـ Console")
-                    break
-
-                # ✅ 2. Welcome page?
-                if await self._is_welcome_page(page):
-                    log.info("📋 صفحة Welcome — نحاول نضغط Accept")
-
-                    # ✅ نستنى 5 ثواني باش الصفحة تكمل
+                    log.info("✅ وصلنا للـ Console!")
                     await human_delay(5, 8)
-                    await take_screenshot(page, "cc_welcome_loaded")
+                    return page
 
-                    # ✅ نضغط على Accept
-                    clicked = await self._handle_welcome_page_hard(page)
+                # ============================================
+                # ✅ 2. Welcome / TOS / Speedbump
+                # ============================================
+                if await self._is_welcome_page(page):
+                    log.info("📋 Welcome/TOS/Speedbump")
+                    log.info("⏳ نستنى 8s باش الصفحة تكمل...")
+                    await human_delay(8, 12)
+
+                    # ✅ نضغط Accept
+                    log.info("🖱️ نضغط على Accept...")
+                    clicked = await self._handle_welcome_hard(page)
                     if clicked:
                         self.welcome_clicked = True
-                        log.info("✅ ضغطنا Accept — نستنى 15s")
+                        log.info("✅ ضغطنا — نستنى 15s")
                         await human_delay(15, 20)
-                        continue
                     else:
                         log.warning("⚠️ ما لقيناش Accept")
                         await human_delay(5, 8)
+                    continue
+
+                # ============================================
+                # ✅ 3. CAPTCHA (فحص + حل)
+                # ============================================
+                try:
+                    from automation.captcha_solver import detect_and_solve_captcha
+                    solution = await detect_and_solve_captcha(
+                        page,
+                        user_id=user_id,
+                        sender=sender,
+                        context=context,
+                    )
+                    if solution:
+                        log.info(f"✅ CAPTCHA solved: {solution}")
+                        await self._fill_captcha(page, solution)
+                        log.info("⏳ نستنى 8s بعد CAPTCHA...")
+                        await human_delay(8, 12)
                         continue
+                except Exception as e:
+                    log.warning(f"CAPTCHA: {e}")
 
-                # ✅ 3. Sign in?
+                # ============================================
+                # ✅ 4. Sign in?
+                # ============================================
                 if await self._is_signin_page(page):
-                    log.info(f"🔑 Sign in")
+                    log.info("🔑 Sign in")
+                    log.info("⏳ نستنى 5s باش الصفحة تكمل...")
+                    await human_delay(5, 8)
 
-                    # نحل CAPTCHA يدوياً
-                    try:
-                        from automation.captcha_solver import detect_and_solve_captcha
-                        await human_delay(1, 2)
-                        solution = await detect_and_solve_captcha(
-                            page,
-                            user_id=user_id,
-                            sender=sender,
-                            context=context,
-                        )
-                        if solution:
-                            log.info(f"✅ CAPTCHA solved: {solution}")
-                            await self._fill_captcha(page, solution)
-                            await human_delay(4, 6)
-                            continue
-                    except Exception as e:
-                        log.warning(f"فشل CAPTCHA: {e}")
-
-                    # نسجلو
                     try:
                         await self._do_signin(page, self.username, self.password)
-                        await human_delay(5, 7)
+                        log.info("⏳ نستنى 10s بعد sign in...")
+                        await human_delay(10, 15)
                         await take_screenshot(page, f"cc_after_signin_{attempt}")
                     except Exception as e:
                         log.warning(f"فشل sign in: {e}")
-
+                        await human_delay(5, 8)
                     continue
 
-                # ✅ 4. كلمة سر غلط؟
-                if await self._has_wrong_password_error(page):
-                    await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
-                    raise RuntimeError("❌ كلمة السر غلط.")
-
+                # ============================================
                 # ✅ 5. Verify?
+                # ============================================
                 if await self._has_verify_required(page):
                     await take_screenshot(page, f"cc_verify_{attempt}")
-                    raise RuntimeError("❌ Google كتطلب verify.")
+                    raise RuntimeError("❌ Google كتطلب verify")
 
+                # ============================================
+                # ✅ 6. كلمة سر غلط؟
+                # ============================================
+                if await self._has_wrong_password_error(page):
+                    await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
+                    raise RuntimeError("❌ كلمة السر غلط")
+
+                # ============================================
+                # ✅ 7. صفحة غير معروفة — نستنى
+                # ============================================
                 log.warning(f"❓ صفحة غير معروفة: {page.url[:100]}")
-                await human_delay(3, 5)
+                log.info("⏳ نستنى 10s...")
+                await human_delay(10, 15)
 
-            await self._wait_for_console(page, timeout=30000)
-            log.info(f"✅ URL النهائي: {page.url}")
-            return page
+            await take_screenshot(page, "cc_final_fail")
+            raise RuntimeError(f"❌ فشل بعد 6 محاولات\nURL: {page.url[:200]}")
 
         except Exception as e:
-            log.error(f"فشل تسجيل الدخول: {e}")
+            log.error(f"فشل: {e}")
             await take_screenshot(page, "cc_error")
             raise
 
-    # ==================== Welcome Accept — 5 طرق ====================
+    # ==================== Welcome Hard Click ====================
 
-    async def _handle_welcome_page_hard(self, page) -> bool:
-        """
-        يحاول يضغط Accept بـ 5 طرق.
-        """
-        await human_delay(2, 3)
+    async def _handle_welcome_hard(self, page) -> bool:
+        """يضغط على Accept بـ 5 طرق"""
+        await human_delay(3, 5)
 
-        # ✅ 1. نسجل الأزرار
+        # ✅ نسجل الأزرار
         try:
             buttons = await page.evaluate("""
                 () => {
@@ -134,78 +152,66 @@ class CloudConsole:
                         text: (el.innerText || el.value || '').trim().substring(0, 60),
                         visible: el.offsetParent !== null,
                         disabled: el.disabled || false,
-                        cls: (el.className || '').toString().substring(0, 60),
                     })).filter(b => b.visible && !b.disabled && b.text);
                 }
             """)
             log.info(f"🔍 الأزرار: {buttons}")
-        except Exception as e:
-            log.warning(f"فشل جلب الأزرار: {e}")
+        except Exception:
+            pass
 
-        # ✅ 2. JS click (5 أحداث)
+        # ✅ 1. JS click (5 أحداث)
         try:
             clicked = await page.evaluate("""
                 async () => {
                     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
                     function findBtn() {
                         const all = document.querySelectorAll('button, a, [role="button"]');
-                        // الأولوية 1: Accept بالضبط
+                        // exact
                         for (const el of all) {
                             if (el.offsetParent === null) continue;
                             if (el.disabled) continue;
                             const t = (el.innerText || el.value || '').trim().toLowerCase();
                             if (t === 'accept' || t === 'i understand' || t === 'i agree' ||
-                                t === 'agree' || t === 'continue') {
-                                return el;
-                            }
+                                t === 'agree' || t === 'continue') return el;
                         }
-                        // الأولوية 2: includes
+                        // includes
                         for (const el of all) {
                             if (el.offsetParent === null) continue;
                             if (el.disabled) continue;
                             const t = (el.innerText || el.value || '').trim().toLowerCase();
                             if (t.includes('accept') || t.includes('understand') ||
-                                t.includes('agree')) {
-                                return el;
-                            }
+                                t.includes('agree')) return el;
                         }
                         return null;
                     }
-
                     const btn = findBtn();
                     if (!btn) return { error: 'not_found' };
-
                     const text = (btn.innerText || btn.value || '').trim();
                     btn.scrollIntoView({block: 'center'});
                     btn.focus();
                     await sleep(300);
-
-                    // ✅ 5 أحداث
                     btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
                     btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                     btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
                     btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                     btn.click();
-
-                    return { clicked: text, tag: btn.tagName, method: '5_events' };
+                    return { clicked: text, tag: btn.tagName };
                 }
             """)
             if clicked and clicked.get("clicked"):
-                log.info(f"✅ JS click: {clicked}")
+                log.info(f"✅ JS 5-event: {clicked}")
                 return True
         except Exception as e:
             log.warning(f"JS: {e}")
 
-        # ✅ 3. Playwright locators
+        # ✅ 2. Playwright
         for sel in [
             'button:has-text("Accept")',
             'button:has-text("I understand")',
             'button:has-text("I agree")',
             'button:has-text("Agree")',
             'button:has-text("Continue")',
-            'button:has-text("Got it")',
             'button[type="submit"]',
             '[role="button"]:has-text("Accept")',
         ]:
@@ -214,8 +220,6 @@ class CloudConsole:
                 if await el.count() == 0:
                     continue
                 if not await el.is_visible():
-                    continue
-                if await el.is_disabled():
                     continue
                 log.info(f"✅ Playwright: {sel}")
                 try:
@@ -230,7 +234,7 @@ class CloudConsole:
             except Exception:
                 continue
 
-        # ✅ 4. Blue button (Google)
+        # ✅ 3. Blue button
         try:
             clicked = await page.evaluate("""
                 async () => {
@@ -242,7 +246,6 @@ class CloudConsole:
                         const rawText = (el.innerText || el.value || '').trim();
                         if (rawText.length > 100) continue;
                         const bg = window.getComputedStyle(el).backgroundColor;
-                        // Google blue
                         if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
                             bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)' ||
                             bg === 'rgb(13, 101, 45)' || bg === 'rgb(24, 90, 188)') {
@@ -262,7 +265,7 @@ class CloudConsole:
         except Exception:
             pass
 
-        # ✅ 5. آخر زر visible
+        # ✅ 4. آخر زر visible
         try:
             result = await page.evaluate("""
                 () => {
@@ -299,19 +302,14 @@ class CloudConsole:
             return ""
 
     async def _is_welcome_page(self, page) -> bool:
-        # ✅ 1. من URL
         url = page.url.lower()
         if "workspacetermsofservice" in url or "speedbump" in url:
             return True
-
-        # ✅ 2. من نص الصفحة
         text = (await self._get_body_text(page)).lower()
         if "welcome to your new account" in text:
             return True
         if "terms of service" in text:
             return True
-
-        # ✅ 3. من الأزرار
         try:
             for sel in [
                 'button:has-text("Accept")',
@@ -370,7 +368,7 @@ class CloudConsole:
                 pass
         return False
 
-    # ==================== CAPTCHA ====================
+    # ==================== CAPTCHA Fill ====================
 
     async def _fill_captcha(self, page, solution: str):
         for sel in [
@@ -405,7 +403,7 @@ class CloudConsole:
                             btn = page.locator(btn_sel).first
                             if await btn.count() > 0 and await btn.is_visible():
                                 await btn.click()
-                                await human_delay(3, 5)
+                                await human_delay(5, 8)
                                 return True
                         except Exception:
                             continue
@@ -420,7 +418,7 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # Email
+        # ✅ EMAIL
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -432,21 +430,23 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ حقل الإيميل: {sel}")
+                log.info(f"✅ email field: {sel}")
                 await el.click()
-                await human_delay(0.5, 1.0)
+                await human_delay(1, 2)
                 await el.fill("")
-                await human_delay(0.2, 0.5)
+                await human_delay(0.5, 1.0)
                 await el.fill(username)
-                await human_delay(0.3, 0.8)
+                log.info("⏳ نستنى 3s بعد كتابة email...")
+                await human_delay(3, 5)
+
                 val = await el.input_value()
                 if val.strip():
                     email_filled = True
                     break
 
                 await el.click()
-                await page.keyboard.type(username, delay=50)
-                await human_delay(0.3, 0.8)
+                await page.keyboard.type(username, delay=80)
+                await human_delay(3, 5)
                 val = await el.input_value()
                 if val.strip():
                     email_filled = True
@@ -456,19 +456,18 @@ class CloudConsole:
                 continue
 
         if not email_filled:
-            body_text = await self._get_body_text(page)
-            raise RuntimeError(
-                f"❌ ما قدرتش نكتب الإيميل\nURL: {page.url[:150]}"
-            )
+            raise RuntimeError("❌ فشل email")
 
+        # ✅ Next email
+        log.info("🖱️ نضغط Next (email)")
         await self._click_next(page, "email")
-        await human_delay(4, 6)
+        log.info("⏳ نستنى 8s بعد Next...")
+        await human_delay(8, 12)
         await take_screenshot(page, "cc_after_email_next")
 
-        # CAPTCHA
+        # ✅ CAPTCHA (إذا كانت)
         try:
             from automation.captcha_solver import detect_and_solve_captcha
-            await human_delay(1, 2)
             solution = await detect_and_solve_captcha(
                 page,
                 user_id=self.user_id,
@@ -478,13 +477,15 @@ class CloudConsole:
             if solution:
                 log.info(f"✅ CAPTCHA solved (after email)")
                 await self._fill_captcha(page, solution)
-                await human_delay(4, 6)
+                log.info("⏳ نستنى 8s بعد CAPTCHA...")
+                await human_delay(8, 12)
                 await take_screenshot(page, "cc_after_captcha")
         except Exception as e:
-            log.warning(f"فشل CAPTCHA: {e}")
+            log.warning(f"CAPTCHA: {e}")
 
-        # Password
-        await human_delay(2, 3)
+        # ✅ PASSWORD
+        log.info("⏳ نستنى 5s قبل password...")
+        await human_delay(5, 8)
         await take_screenshot(page, "cc_before_pwd")
 
         password_filled = False
@@ -497,21 +498,22 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ حقل كلمة السر: {sel}")
+                log.info(f"✅ pwd field: {sel}")
                 await el.click()
-                await human_delay(0.5, 1.0)
+                await human_delay(1, 2)
                 await el.fill("")
-                await human_delay(0.2, 0.5)
+                await human_delay(0.5, 1.0)
                 await el.fill(password)
-                await human_delay(0.3, 0.8)
+                log.info("⏳ نستنى 3s بعد كتابة password...")
+                await human_delay(3, 5)
                 val = await el.input_value()
                 if val.strip():
                     password_filled = True
                     break
 
                 await el.click()
-                await page.keyboard.type(password, delay=50)
-                await human_delay(0.3, 0.8)
+                await page.keyboard.type(password, delay=80)
+                await human_delay(3, 5)
                 val = await el.input_value()
                 if val.strip():
                     password_filled = True
@@ -521,16 +523,16 @@ class CloudConsole:
                 continue
 
         if not password_filled:
-            body_text = await self._get_body_text(page)
             await take_screenshot(page, "cc_no_pwd")
-            raise RuntimeError(
-                f"❌ ما قدرتش نكتب كلمة السر\nURL: {page.url[:150]}"
-            )
+            raise RuntimeError("❌ فشل pwd")
 
+        # ✅ Next password
+        log.info("🖱️ نضغط Next (password)")
         await self._click_next(page, "password")
-        await human_delay(4, 7)
+        log.info("⏳ نستنى 12s بعد Next password...")
+        await human_delay(12, 18)
         await take_screenshot(page, "cc_after_pwd_next")
-        log.info("✅ تم إدخال email + password")
+        log.info("✅ email + password done")
 
     async def _click_next(self, page, step: str):
         for sel in [
@@ -564,5 +566,5 @@ class CloudConsole:
             )
         except Exception:
             log.warning("Timeout Console")
-        await human_delay(3, 5)
+        await human_delay(5, 8)
         await take_screenshot(page, "cc_console_ready")
