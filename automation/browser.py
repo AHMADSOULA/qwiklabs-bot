@@ -5,7 +5,17 @@ from config import config
 from automation.stealth import STEALTH_JS
 from utils.logger import get_logger
 
+# ✅ playwright-stealth
+try:
+    from playwright_stealth import stealth_async
+    HAS_STEALTH = True
+    log_msg = "✅ playwright-stealth موجود"
+except ImportError:
+    HAS_STEALTH = False
+    log_msg = "⚠️ playwright-stealth ما كانش — غادي نستعمل JS فقط"
+
 log = get_logger("Browser")
+log.info(log_msg)
 
 
 class StealthBrowser:
@@ -27,6 +37,7 @@ class StealthBrowser:
         else:
             log.info("🆕 Chrome Profile جديد")
 
+        # ✅ Args قوية
         args = [
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process,CalculateNativeWinOcclusion",
@@ -42,6 +53,14 @@ class StealthBrowser:
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            "--force-color-profile=srgb",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-service-autorun",
+            "--password-store=basic",
+            "--use-mock-keychain",
             "--window-size=1920,1080",
             f"--user-agent={config.USER_AGENT}",
         ]
@@ -53,6 +72,7 @@ class StealthBrowser:
                 "username": config.PROXY_USERNAME,
                 "password": config.PROXY_PASSWORD,
             }
+            log.info(f"🌍 Proxy: {config.PROXY_SERVER}")
 
         launch_kwargs = {
             "user_data_dir": profile_dir,
@@ -67,11 +87,15 @@ class StealthBrowser:
             "is_mobile": False,
             "has_touch": False,
             "java_script_enabled": True,
+            "ignore_https_errors": True,
             "extra_http_headers": {
                 "Accept-Language": "en-US,en;q=0.9",
                 "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
+                "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.0.0", "Chromium";v="131.0.0.0", "Not_A Brand";v="24.0.0.0"',
+                "Upgrade-Insecure-Requests": "1",
+                "DNT": "1",
             },
         }
         if proxy:
@@ -85,10 +109,29 @@ class StealthBrowser:
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
+        # ✅ حقن STEALTH_JS
         await self.context.add_init_script(STEALTH_JS)
-        await self.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
+
+        # ✅ إخفاء webdriver
+        await self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            delete Object.getPrototypeOf(navigator).webdriver;
+        """)
+
+        # ✅ playwright-stealth على كل page
+        if HAS_STEALTH:
+            async def apply_stealth(page):
+                try:
+                    await stealth_async(page)
+                    log.info(f"✅ stealth مطبق على {page.url[:50]}")
+                except Exception as e:
+                    log.warning(f"فشل stealth على page: {e}")
+
+            self.context.on("page", apply_stealth)
+
+            # نطبقو على الصفحات الموجودة
+            for page in self.context.pages:
+                await apply_stealth(page)
 
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
@@ -104,7 +147,7 @@ class StealthBrowser:
                 cookies_file = os.path.join(profile_dir, "cookies_backup.json")
                 with open(cookies_file, "w") as f:
                     json.dump(cookies, f)
-                log.info(f"✅ تم حفظ {len(cookies)} cookies")
+                log.info(f"✅ حفظت {len(cookies)} cookies")
             except Exception as e:
                 log.warning(f"فشل حفظ cookies: {e}")
 
