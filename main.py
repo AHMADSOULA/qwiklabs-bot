@@ -13,22 +13,50 @@ log = get_logger("Main")
 
 async def post_init(app):
     await init_db()
-    log.info("✅ تم تهيئة قاعدة البيانات")
+    log.info("✅ DB ready")
+
+
+async def route_text(update, context):
+    from database import db
+    from utils.helpers import extract_urls
+
+    try:
+        from automation.captcha_solver import set_captcha_solution, PENDING_CAPTCHA
+        has_cap = True
+    except Exception:
+        has_cap = False
+        PENDING_CAPTCHA = {}
+
+    user = update.effective_user
+    text = update.message.text or ""
+
+    # CAPTCHA
+    if has_cap and user.id in PENDING_CAPTCHA and PENDING_CAPTCHA[user.id].get("waiting"):
+        set_captcha_solution(user.id, text)
+        await update.message.reply_text(f"✅ الحل: `{text}`", parse_mode="Markdown")
+        return
+
+    # SSO
+    if extract_urls(text):
+        await handlers.handle_url(update, context)
+        return
+
+    # password
+    session = await db.get_session(user.id)
+    if session and session.get("state") == "waiting_password":
+        await handlers.handle_password(update, context)
 
 
 def main():
-    log.info("🚀 بدء تشغيل البوت...")
-
+    log.info("🚀 starting...")
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
-
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("status", handlers.status_cmd))
     app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
     app.add_handler(CallbackQueryHandler(handlers.button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_url))
-
-    log.info("✅ البوت يعمل الآن.")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
+    log.info("✅ running")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 
