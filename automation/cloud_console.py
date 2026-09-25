@@ -170,7 +170,6 @@ class CloudConsole:
 
     async def _is_welcome_page(self, page) -> bool:
         url = page.url.lower()
-        # ✅ Speedbump/TOS
         if "workspacetermsofservice" in url or "speedbump" in url:
             return True
 
@@ -180,9 +179,9 @@ class CloudConsole:
         if "terms of service" in text:
             return True
 
-        # ✅ نفحصو واش كاين زر Accept
         try:
             for sel in [
+                'button:has-text("I understand")',
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
                 'button:has-text("Agree")',
@@ -367,17 +366,17 @@ class CloudConsole:
             except Exception:
                 continue
 
-    # ==================== Welcome (8 طرق) ====================
+    # ==================== Welcome (محسّن) ====================
 
     async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
         """
-        يحاول يضغط على زر Accept بكل الطرق الممكنة.
-        خاص لصفحة speedbump/workspacetermsofservice.
+        يحاول يضغط على زر Accept بكل الطرق.
+        خاص لصفحة speedbump/workspacetermsofservice (Qwiklabs).
         """
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # ✅ 1. نسجل كل الأزرار الموجودة
+            # ✅ 1. تسجيل الأزرار الموجودة
             try:
                 buttons_info = await page.evaluate("""
                     () => {
@@ -387,7 +386,7 @@ class CloudConsole:
                         return Array.from(all).map((el, i) => ({
                             idx: i,
                             tag: el.tagName,
-                            text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 60),
+                            text: (el.innerText || el.value || el.textContent || '').trim().substring(0, 80),
                             type: el.type || '',
                             id: el.id || '',
                             cls: (el.className || '').toString().substring(0, 60),
@@ -396,52 +395,38 @@ class CloudConsole:
                         }));
                     }
                 """)
-                log.info(f"🔍 الأزرار الموجودة: {buttons_info}")
+                log.info(f"🔍 الأزرار: {buttons_info}")
             except Exception as e:
                 log.warning(f"فشل جلب الأزرار: {e}")
 
-            # ✅ 2. نسجل نص الصفحة
-            try:
-                body_text = await page.inner_text("body")
-                body_text_short = body_text[:500].replace('\n', ' | ')
-                log.info(f"📄 نص الصفحة: {body_text_short[:400]}")
-            except Exception:
-                pass
-
-            # ✅ 3. نسجل الـ iframes
-            try:
-                iframes = await page.evaluate("""
-                    () => {
-                        const ifs = document.querySelectorAll('iframe');
-                        return Array.from(ifs).map((f, i) => ({
-                            idx: i,
-                            src: (f.src || '').substring(0, 100),
-                            visible: f.offsetParent !== null,
-                        }));
-                    }
-                """)
-                if iframes:
-                    log.info(f"🔍 iframes: {iframes}")
-            except Exception:
-                pass
-
-            # ✅ 4. JS click على كل زر فيه accept
+            # ✅ 2. JS click — keywords (12 كلمة)
             try:
                 clicked = await page.evaluate("""
                     () => {
+                        const keywords = [
+                            'accept', 'agree', 'confirm', 'got it',
+                            'i agree', 'i understand', 'i accept',
+                            'continue', 'ok', 'yes', 'allow', 'submit',
+                            'قبول', 'موافق', 'أوافق', 'متابعة', 'أفهم'
+                        ];
                         const all = document.querySelectorAll(
-                            'button, a, [role="button"], input[type="submit"], input[type="button"], span, div'
+                            'button, a, [role="button"], input[type="submit"], input[type="button"]'
                         );
-                        const keywords = ['accept', 'agree', 'confirm', 'got it',
-                                         'i agree', 'continue', 'ok', 'yes',
-                                         'قبول', 'موافق', 'أوافق', 'متابعة'];
                         for (const el of all) {
                             if (el.offsetParent === null) continue;
-                            const t = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                            if (el.disabled) continue;
+                            const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                            if (!rawText) continue;
+                            if (rawText.length > 100) continue;
+                            const t = rawText.toLowerCase();
                             for (const kw of keywords) {
-                                if (t === kw || t.includes(kw)) {
+                                if (t === kw || t.startsWith(kw) || t.includes(kw)) {
                                     el.click();
-                                    return { clicked: el.innerText || el.value || 'clicked', tag: el.tagName };
+                                    return {
+                                        clicked: rawText.substring(0, 100),
+                                        tag: el.tagName,
+                                        cls: (el.className || '').toString().substring(0, 50),
+                                    };
                                 }
                             }
                         }
@@ -455,10 +440,40 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"JS: {e}")
 
-            # ✅ 5. Playwright locators
+            # ✅ 3. JS exact match
+            try:
+                clicked = await page.evaluate("""
+                    () => {
+                        const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
+                        for (const el of all) {
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const t = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (t.length > 0 && t.length < 100) {
+                                if (t === 'i understand' || t === 'i agree' || t === 'i accept' ||
+                                    t === 'accept' || t === 'agree' || t === 'continue' ||
+                                    t === 'got it' || t === 'ok' || t === 'yes') {
+                                    el.click();
+                                    return { clicked: t, tag: el.tagName };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked:
+                    log.info(f"✅ exact click: {clicked}")
+                    await human_delay(5, 8)
+                    return True
+            except Exception:
+                pass
+
+            # ✅ 4. Playwright locators
             selectors = [
-                'button:has-text("Accept")',
+                'button:has-text("I understand")',
                 'button:has-text("I agree")',
+                'button:has-text("I accept")',
+                'button:has-text("Accept")',
                 'button:has-text("Agree")',
                 'button:has-text("Confirm")',
                 'button:has-text("Got it")',
@@ -467,15 +482,16 @@ class CloudConsole:
                 'button:has-text("Yes")',
                 'button:has-text("قبول")',
                 'button:has-text("موافق")',
+                'a:has-text("I understand")',
                 'a:has-text("Accept")',
                 'a:has-text("Agree")',
+                '[role="button"]:has-text("I understand")',
                 '[role="button"]:has-text("Accept")',
                 '[role="button"]:has-text("Agree")',
+                'input[value*="I understand" i]',
+                'input[value*="Accept" i]',
                 'input[type="submit"]',
                 'button[type="submit"]',
-                'button:last-of-type',
-                'input[value*="Accept" i]',
-                'input[value*="Agree" i]',
             ]
             for sel in selectors:
                 try:
@@ -495,18 +511,21 @@ class CloudConsole:
                     log.warning(f"{sel}: {e}")
                     continue
 
-            # ✅ 6. Blue button (Google)
+            # ✅ 5. Blue button (Google)
             try:
                 clicked = await page.evaluate("""
                     () => {
                         const all = document.querySelectorAll('button, input[type="submit"], a');
                         for (const el of all) {
                             if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const rawText = (el.innerText || el.value || '').trim();
+                            if (rawText.length > 100) continue;
                             const bg = window.getComputedStyle(el).backgroundColor;
                             if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
                                 bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)') {
                                 el.click();
-                                return el.innerText || 'blue';
+                                return { text: rawText.substring(0, 50), bg: bg };
                             }
                         }
                         return null;
@@ -519,16 +538,21 @@ class CloudConsole:
             except Exception:
                 pass
 
-            # ✅ 7. آخر زر فـ الصفحة
+            # ✅ 6. آخر زر visible
             try:
                 result = await page.evaluate("""
                     () => {
                         const all = document.querySelectorAll('button, input[type="submit"]');
-                        const visible = Array.from(all).filter(b => b.offsetParent !== null);
+                        const visible = Array.from(all).filter(b => 
+                            b.offsetParent !== null && !b.disabled
+                        );
                         if (visible.length > 0) {
                             const last = visible[visible.length - 1];
-                            last.click();
-                            return { clicked: 'last', text: last.innerText || last.value };
+                            const text = (last.innerText || last.value || '').trim();
+                            if (text.length < 100) {
+                                last.click();
+                                return { clicked: 'last', text: text.substring(0, 80) };
+                            }
                         }
                         return null;
                     }
@@ -537,19 +561,6 @@ class CloudConsole:
                     log.info(f"✅ last button: {result}")
                     await human_delay(5, 8)
                     return True
-            except Exception:
-                pass
-
-            # ✅ 8. Scroll + Tab + Enter
-            try:
-                await page.keyboard.press("End")
-                await human_delay(1, 2)
-                await page.keyboard.press("Tab")
-                await human_delay(0.5, 1)
-                await page.keyboard.press("Enter")
-                await human_delay(4, 6)
-                log.info("✅ Scroll + Tab + Enter")
-                return True
             except Exception:
                 pass
 
