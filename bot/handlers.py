@@ -17,7 +17,7 @@ from automation.cloud_console import CloudConsole
 log = get_logger("Handlers")
 job_lock = asyncio.Lock()
 
-# ==================== إعدادات ثابتة ====================
+# إعدادات ثابتة
 IMAGE = "docker.io/ajndjd2/ahmed-vip1"
 SERVICE_NAME = "ahmed-vip1"
 REGION = "us-central1"
@@ -42,7 +42,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     jobs = await db.get_user_jobs(user.id, limit=5)
     if not jobs:
-        await update.message.reply_text("📭 لا توجد مهام سابقة.")
+        await update.message.reply_text("📭 لا توجد مهام.")
         return
     lines = []
     for jid, status, created in jobs:
@@ -74,16 +74,14 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_photo(msg, filepath, caption=""):
     try:
         if not filepath:
-            return False
+            return
         import os
         if not os.path.exists(filepath):
-            return False
+            return
         with open(filepath, "rb") as f:
             await msg.reply_photo(photo=InputFile(f), caption=caption[:1000])
-        return True
     except Exception as e:
-        log.error(f"فشل إرسال صورة: {e}")
-        return False
+        log.error(f"فشل صورة: {e}")
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,13 +93,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sso_url = urls[0]
     user = update.effective_user
     if "skills.google" not in sso_url and "qwiklabs" not in sso_url:
-        await update.message.reply_text("⚠️ الرابط لا يبدو من Google Skills.")
+        await update.message.reply_text("⚠️ الرابط ماشي من Google Skills.")
         return
 
     existing = await db.get_session(user.id)
     if existing:
         await update.message.reply_text(
-            "⚠️ عندك مهمة قيد التنفيذ. أرسل `/cancel` باش تلغيها.",
+            "⚠️ عندك مهمة. أرسل `/cancel`.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -112,13 +110,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     msg = await update.message.reply_text(
-        f"📥 تم استلام المهمة `#{job_id}`\n\n🔹 جاري فتح SSO...",
+        f"📥 المهمة `#{job_id}`\n\n🔹 فتح SSO...",
         parse_mode=ParseMode.MARKDOWN,
     )
-    asyncio.create_task(run_step1_open_sso(job_id, sso_url, msg, user.id, context))
+    asyncio.create_task(run_step1(job_id, sso_url, msg, user.id, context))
 
 
-async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
+async def run_step1(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
         try:
@@ -149,7 +147,7 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
             if shot:
                 await send_photo(
                     msg, shot,
-                    f"📸 credentials\n👤 `{email}`\n🔑 {'✅' if password else '❌'}"
+                    f"📸\n👤 `{email}`\n🔑 {'✅' if password else '❌'}"
                 )
 
             context.bot_data[f"page_{user_id}"] = page
@@ -160,31 +158,29 @@ async def run_step1_open_sso(job_id, sso_url, msg, user_id, context):
                 user_id=user_id,
                 username=email,
                 password=password,
-                state="waiting_password" if not password else "ready_to_login"
+                state="waiting_password" if not password else "ready"
             )
 
             if password:
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n"
-                    f"🔑 كلمة السر مستخرجة\n\n"
-                    f"🚀 جاري تسجيل الدخول والنشر...",
+                    f"🔑 كلمة السر موجودة\n\n"
+                    f"🚀 جاري التسجيل والنشر...",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                asyncio.create_task(run_step2_login(
+                asyncio.create_task(run_step2(
                     job_id, email, password, msg, user.id, context
                 ))
             else:
                 await msg.edit_text(
                     f"✅ *#{job_id}*\n\n"
                     f"👤 `{email}`\n\n"
-                    f"🔑 *الرابط ما فيهش كلمة السر*\n"
-                    f"أرسل كلمة السر الآن:",
+                    f"🔑 *أرسل كلمة السر:*",
                     parse_mode=ParseMode.MARKDOWN,
                 )
-
         except Exception as e:
-            log.exception("فشل فتح SSO")
+            log.exception("فشل SSO")
             await db.update_job(job_id, "failed", str(e))
             await db.clear_session(user_id)
             await msg.edit_text(
@@ -213,21 +209,19 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    await db.set_session(
-        user_id=user.id, password=text, state="ready_to_login"
-    )
+    await db.set_session(user_id=user.id, password=text, state="ready")
 
     msg = await update.message.reply_text(
-        f"✅ تم استلام كلمة السر\n\n🚀 جاري تسجيل الدخول والنشر...",
+        f"✅ تم استلام كلمة السر\n\n🚀 جاري النشر...",
         parse_mode=ParseMode.MARKDOWN,
     )
 
-    asyncio.create_task(run_step2_login(
+    asyncio.create_task(run_step2(
         job_id, email, text, msg, user.id, context
     ))
 
 
-async def run_step2_login(job_id, username, password, msg, user_id, context):
+async def run_step2(job_id, username, password, msg, user_id, context):
     async with job_lock:
         try:
             page = context.bot_data.get(f"page_{user_id}")
@@ -253,10 +247,10 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 if shot:
                     await send_photo(
                         msg, shot,
-                        f"❌ تعذر project_id\nURL: {console_page.url[:200]}"
+                        f"❌ project_id\nURL: {console_page.url[:200]}"
                     )
                 raise RuntimeError(
-                    f"تعذر استخراج project_id\nURL: {console_page.url[:200]}"
+                    f"تعذر project_id\nURL: {console_page.url[:200]}"
                 )
 
             await msg.edit_text(
@@ -301,7 +295,7 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
                 await asyncio.sleep(5)
                 shot = await take_screenshot(console_page, "deployed")
                 if shot:
-                    await send_photo(msg, shot, "📸 Cloud Run بعد النشر")
+                    await send_photo(msg, shot, "📸 Cloud Run")
             except Exception:
                 pass
 
@@ -311,11 +305,9 @@ async def run_step2_login(job_id, username, password, msg, user_id, context):
             await msg.edit_text(
                 f"✅ *#{job_id}* — تم النشر!\n\n"
                 f"🔗 *الرابط:*\n{url}\n\n"
-                f"📦 `{SERVICE_NAME}`\n"
-                f"🌍 `{REGION}`",
+                f"📦 `{SERVICE_NAME}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
-
         except Exception as e:
             log.exception("فشل النشر")
             await db.update_job(job_id, "failed", str(e))
@@ -348,7 +340,6 @@ async def get_project_id(page, username: str = None) -> str:
     m = re.search(r'project=([a-z0-9\-]+)', url)
     if m:
         return m.group(1)
-
     try:
         pid = await page.evaluate("""
             async () => {
@@ -369,7 +360,6 @@ async def get_project_id(page, username: str = None) -> str:
             return pid
     except Exception:
         pass
-
     try:
         await page.goto(
             "https://console.cloud.google.com/home/dashboard",
@@ -381,7 +371,6 @@ async def get_project_id(page, username: str = None) -> str:
             return m.group(1)
     except Exception:
         pass
-
     return None
 
 
