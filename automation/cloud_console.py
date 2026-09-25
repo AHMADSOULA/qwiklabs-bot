@@ -14,6 +14,7 @@ class CloudConsole:
         self.user_id = None
         self.sender = None
         self.tos_clicked = False
+        self.captcha_solved_count = 0
 
     async def login(self, username: str, password: str,
                     user_id: int = None, sender=None, context=None):
@@ -29,38 +30,45 @@ class CloudConsole:
         await take_screenshot(page, "cc_01_loaded")
         log.info(f"URL: {page.url}")
 
-        for attempt in range(8):
+        for attempt in range(10):
             log.info(f"========== محاولة {attempt + 1} ==========")
             await human_delay(2, 4)
             await take_screenshot(page, f"cc_attempt_{attempt}")
             current_url = page.url
             log.info(f"URL: {current_url}")
 
-            # ✅ 0. Dialog جديد (Terms of Service)
-            if await self._handle_gcloud_dialog(page):
-                log.info("✅ تم التعامل مع Dialog")
-                await human_delay(5, 8)
-                continue
-
-            # ✅ 1. CAPTCHA (عبر TrueCaptcha API)
-            captcha_solved = await self._try_solve_captcha_api(page, attempt)
-            if captcha_solved:
-                await human_delay(4, 6)
-                continue
-
-            # 2. Console ready?
+            # ✅ 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ وصلنا للـ Console!")
                 await self._wait_for_console(page, timeout=30000)
                 return page
 
-            # 3. Welcome / TOS / Speedbump?
+            # ✅ 2. CAPTCHA (ذكي — يحلها مرة وحدة فقط)
+            try:
+                from automation.captcha_solver import has_captcha, detect_and_solve_captcha
+                if await has_captcha(page):
+                    log.info("🚨 CAPTCHA detected")
+                    if self.captcha_solved_count < 3:  # ✅ max 3 مرات
+                        solution = await detect_and_solve_captcha(page)
+                        if solution:
+                            self.captcha_solved_count += 1
+                            log.info(f"✅ CAPTCHA solved ({self.captcha_solved_count}/3)")
+                            await human_delay(5, 8)
+                            continue
+                    else:
+                        log.warning("⚠️ تجاوزنا حد CAPTCHA (3 مرات)")
+            except Exception as e:
+                log.warning(f"CAPTCHA: {e}")
+
+            # ✅ 3. Welcome / TOS / Speedbump?
             if await self._is_welcome_page(page):
                 log.info("📋 Welcome/TOS/Speedbump")
 
                 if self.tos_clicked:
-                    log.info("⏳ ضغطنا قبل على Accept — نستنى...")
-                    await human_delay(10, 15)
+                    # ✅ ضغطنا قبل — نستنى فقط
+                    log.info("⏳ ضغطنا قبل — نستنى Google...")
+                    await human_delay(8, 12)
+
                     new_url = page.url.lower()
                     if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
                         log.info("🎉 خرجنا من TOS!")
@@ -68,22 +76,22 @@ class CloudConsole:
                         continue
                     else:
                         log.warning("⚠️ مازال فـ TOS")
-                        await human_delay(10, 15)
                         continue
                 else:
+                    # ✅ أول مرة — نضغطو مرة وحدة
                     log.info("🖱️ نضغط على Accept مرة وحدة...")
                     clicked = await self._handle_welcome_page_once(page)
                     if clicked:
                         self.tos_clicked = True
-                        log.info("✅ ضغطنا — نستنى...")
-                        await human_delay(10, 15)
+                        log.info("✅ ضغطنا — نستنى Google...")
+                        await human_delay(8, 12)
                         continue
                     else:
                         log.warning("⚠️ ما لقيتش Accept")
-                        await human_delay(5, 8)
+                        await human_delay(4, 6)
                         continue
 
-            # 4. Sign in?
+            # ✅ 4. Sign in?
             if await self._is_signin_page(page):
                 log.info("🔑 Sign in")
                 try:
@@ -95,215 +103,22 @@ class CloudConsole:
                     await human_delay(3, 5)
                 continue
 
-            # 5. Verify?
+            # ✅ 5. Verify?
             if await self._has_verify_required(page):
                 await take_screenshot(page, f"cc_verify_{attempt}")
                 raise RuntimeError("❌ Google كتطلب verify")
 
-            # 6. كلمة سر غلط؟
+            # ✅ 6. كلمة سر غلط؟
             if await self._has_wrong_password_error(page):
                 await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
                 raise RuntimeError("❌ كلمة السر غلط")
 
-            # 7. صفحة غير معروفة
+            # ✅ 7. صفحة غير معروفة
             log.warning(f"❓ صفحة غير معروفة: {current_url[:100]}")
-            await human_delay(5, 8)
+            await human_delay(4, 6)
 
         await take_screenshot(page, "cc_final_fail")
-        raise RuntimeError(f"❌ فشل بعد 8 محاولات\nURL: {page.url[:200]}")
-
-    # ==================== CAPTCHA عبر TrueCaptcha API ====================
-
-    async def _try_solve_captcha_api(self, page, attempt: int) -> bool:
-        """
-        يتحقق واش كاين CAPTCHA ويحلها عبر TrueCaptcha API.
-        """
-        try:
-            # ✅ نفحصو واش كاين CAPTCHA
-            has_captcha = await page.evaluate("""
-                () => {
-                    const imgs = document.querySelectorAll('img');
-                    for (const img of imgs) {
-                        if (img.offsetParent === null) continue;
-                        const src = (img.src || '').toLowerCase();
-                        const alt = (img.alt || '').toLowerCase();
-                        const id = (img.id || '').toLowerCase();
-                        const cls = (img.className || '').toString().toLowerCase();
-                        if (src.includes('captcha') || alt.includes('captcha') ||
-                            id.includes('captcha') || cls.includes('captcha')) {
-                            return true;
-                        }
-                    }
-                    const inputs = document.querySelectorAll('input');
-                    for (const inp of inputs) {
-                        if (inp.offsetParent === null) continue;
-                        const name = (inp.name || '').toLowerCase();
-                        const id = (inp.id || '').toLowerCase();
-                        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
-                        if (name === 'ca' || id === 'ca' || name === 'captcha' ||
-                            id === 'captcha' || aria.includes('type the text')) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-
-            if not has_captcha:
-                return False
-
-            log.info(f"🚨 CAPTCHA مطلوب (محاولة {attempt + 1})")
-
-            # ✅ نحلها عبر TrueCaptcha API
-            from automation.captcha_solver import detect_and_solve_captcha_api
-            solution = await detect_and_solve_captcha_api(page)
-
-            if solution:
-                log.info(f"✅ CAPTCHA solved: {solution}")
-                await self._fill_captcha(page, solution)
-                await take_screenshot(page, f"cc_captcha_solved_{attempt}")
-                return True
-            else:
-                log.warning("⚠️ CAPTCHA ما تحلاش — نجربو مرة أخرى")
-                return False
-        except Exception as e:
-            log.warning(f"فشل CAPTCHA: {e}")
-            return False
-
-    # ==================== Dialog (TOS جديد) ====================
-
-    async def _handle_gcloud_dialog(self, page) -> bool:
-        try:
-            has_dialog = await page.evaluate("""
-                () => {
-                    const dialogs = document.querySelectorAll(
-                        '[role="dialog"], .modal, [role="alertdialog"], mat-dialog-container'
-                    );
-                    for (const d of dialogs) {
-                        if (d.offsetParent === null) continue;
-                        const text = (d.innerText || '').toLowerCase();
-                        if (text.includes('i agree') || text.includes('terms of service') ||
-                            text.includes('welcome student')) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-
-            if not has_dialog:
-                return False
-
-            log.info("🔍 لقيت Dialog — نحاول نضغط checkbox + Continue")
-
-            # ✅ checkbox
-            try:
-                clicked_cb = await page.evaluate("""
-                    () => {
-                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                        for (const cb of checkboxes) {
-                            if (cb.offsetParent === null) continue;
-                            if (cb.checked) continue;
-                            const label = cb.closest('label');
-                            if (label) label.click();
-                            else cb.click();
-                            cb.dispatchEvent(new Event('change', { bubbles: true }));
-                            return { checked: cb.checked };
-                        }
-                        return null;
-                    }
-                """)
-                if clicked_cb:
-                    log.info(f"✅ checkbox: {clicked_cb}")
-                    await human_delay(1, 2)
-            except Exception as e:
-                log.warning(f"checkbox: {e}")
-
-            # ✅ Continue
-            try:
-                clicked_btn = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, a, [role="button"]');
-                        const keywords = ['continue', 'agree', 'accept', 'i agree', 'ok', 'yes'];
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of keywords) {
-                                if (t === kw || t.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.click();
-                                    return { clicked: t.substring(0, 50) };
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked_btn:
-                    log.info(f"✅ Continue: {clicked_btn}")
-                    await human_delay(3, 5)
-                    return True
-            except Exception as e:
-                log.warning(f"Continue: {e}")
-
-            return False
-        except Exception as e:
-            log.warning(f"Dialog: {e}")
-            return False
-
-    # ==================== Fill CAPTCHA ====================
-
-    async def _fill_captcha(self, page, solution: str):
-        for sel in [
-            'input[name="ca"]',
-            'input[id="ca"]',
-            'input[name="captcha"]',
-            'input[id="captcha"]',
-            'input[type="text"][aria-label*="Type the text" i]',
-            'input[type="text"][aria-label*="characters" i]',
-        ]:
-            try:
-                inp = page.locator(sel).first
-                if await inp.count() == 0 or not await inp.is_visible():
-                    continue
-                name = (await inp.get_attribute("name") or "").lower()
-                id_attr = (await inp.get_attribute("id") or "").lower()
-                if "email" in name or "identifier" in id_attr:
-                    continue
-
-                log.info(f"✅ حقل CAPTCHA: {sel}")
-                await inp.click()
-                await human_delay(0.3, 0.6)
-                await inp.fill("")
-                await human_delay(0.2, 0.4)
-                await inp.fill(solution)
-                await human_delay(0.5, 1.0)
-
-                val = await inp.input_value()
-                if val.strip():
-                    log.info(f"✍️ كتبت: {val}")
-                    for btn_sel in [
-                        '#captchaNext',
-                        'button:has-text("Next")',
-                        'input[type="submit"]',
-                        'button[type="submit"]',
-                        '#identifierNext',
-                    ]:
-                        try:
-                            btn = page.locator(btn_sel).first
-                            if await btn.count() > 0 and await btn.is_visible():
-                                await btn.click()
-                                await human_delay(3, 5)
-                                return True
-                        except Exception:
-                            continue
-                    return True
-            except Exception as e:
-                log.warning(f"فشل {sel}: {e}")
-                continue
-        return False
+        raise RuntimeError(f"❌ فشل بعد 10 محاولات\nURL: {page.url[:200]}")
 
     # ==================== Helpers ====================
 
@@ -318,11 +133,13 @@ class CloudConsole:
         url = page.url.lower()
         if "workspacetermsofservice" in url or "speedbump" in url:
             return True
+
         text = (await self._get_body_text(page)).lower()
         if "welcome to your new account" in text:
             return True
         if "terms of service" in text and "i understand" in text:
             return True
+
         try:
             for sel in [
                 'button:has-text("I understand")',
@@ -382,6 +199,7 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
+        # EMAIL
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -422,6 +240,19 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
+        # ✅ CAPTCHA ذكي بعد email (مرة وحدة فقط)
+        try:
+            from automation.captcha_solver import has_captcha, detect_and_solve_captcha
+            if await has_captcha(page) and self.captcha_solved_count < 3:
+                solution = await detect_and_solve_captcha(page)
+                if solution:
+                    self.captcha_solved_count += 1
+                    log.info(f"✅ CAPTCHA solved after email ({self.captcha_solved_count}/3)")
+                    await human_delay(5, 8)
+        except Exception as e:
+            log.warning(f"CAPTCHA بعد email: {e}")
+
+        # PASSWORD
         await human_delay(2, 4)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -485,8 +316,33 @@ class CloudConsole:
             except Exception:
                 continue
 
+    # ==================== Welcome — مرة وحدة ====================
+
     async def _handle_welcome_page_once(self, page) -> bool:
+        """يضغط على "I understand" مرة وحدة فقط"""
         await human_delay(3, 5)
+
+        # نسجل الأزرار
+        try:
+            buttons_info = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll(
+                        'button, a, [role="button"], input[type="submit"]'
+                    );
+                    return Array.from(all).map((el, i) => ({
+                        idx: i,
+                        tag: el.tagName,
+                        text: (el.innerText || el.value || '').trim().substring(0, 60),
+                        visible: el.offsetParent !== null,
+                        disabled: el.disabled || false,
+                    }));
+                }
+            """)
+            log.info(f"🔍 الأزرار: {buttons_info}")
+        except Exception:
+            pass
+
+        # JS click — مرة وحدة
         try:
             clicked = await page.evaluate("""
                 () => {
@@ -518,6 +374,7 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"JS: {e}")
 
+        # Playwright — مرة وحدة
         for sel in [
             'button:has-text("I understand")',
             'button:has-text("Accept")',
@@ -529,11 +386,12 @@ class CloudConsole:
                     continue
                 if not await el.is_visible():
                     continue
-                log.info(f"✅ Playwright: {sel}")
+                log.info(f"✅ Playwright مرة وحدة: {sel}")
                 await el.click(timeout=5000)
                 return True
             except Exception:
                 continue
+
         return False
 
     async def _wait_for_console(self, page, timeout: int = 60000):
