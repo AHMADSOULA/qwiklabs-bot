@@ -13,6 +13,8 @@ class CloudConsole:
         self.password = None
         self.user_id = None
         self.sender = None
+        # ✅ flags
+        self.welcome_page_seen = False
         self.tos_clicked = False
         self.captcha_solved_count = 0
 
@@ -43,53 +45,69 @@ class CloudConsole:
                 await self._wait_for_console(page, timeout=30000)
                 return page
 
-            # ✅ 2. CAPTCHA (ذكي — يحلها مرة وحدة فقط)
+            # ✅ 2. CAPTCHA (ذكي — max 3 مرات)
             try:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 if await has_captcha(page):
-                    log.info("🚨 CAPTCHA detected")
-                    if self.captcha_solved_count < 3:  # ✅ max 3 مرات
+                    if self.captcha_solved_count < 3:
+                        log.info(f"🚨 CAPTCHA ({self.captcha_solved_count + 1}/3)")
                         solution = await detect_and_solve_captcha(page)
                         if solution:
                             self.captcha_solved_count += 1
-                            log.info(f"✅ CAPTCHA solved ({self.captcha_solved_count}/3)")
+                            log.info(f"✅ CAPTCHA solved")
                             await human_delay(5, 8)
                             continue
                     else:
-                        log.warning("⚠️ تجاوزنا حد CAPTCHA (3 مرات)")
+                        log.warning("⚠️ تجاوزنا حد CAPTCHA")
             except Exception as e:
                 log.warning(f"CAPTCHA: {e}")
 
             # ✅ 3. Welcome / TOS / Speedbump?
             if await self._is_welcome_page(page):
-                log.info("📋 Welcome/TOS/Speedbump")
+                log.info("📋 صفحة Welcome/TOS/Speedbump")
 
+                # ✅ إذا لسه أول مرة نشوفوها
+                if not self.welcome_page_seen:
+                    log.info("🆕 أول مرة نشوفو Welcome — نستنى 15 ثانية باش تكمل")
+                    self.welcome_page_seen = True
+                    await human_delay(15, 20)  # ✅ انتظار طويل
+                    await take_screenshot(page, "cc_welcome_loaded")
+                    log.info("📸 صفحة Welcome تحملت كاملة")
+
+                    # ✅ الحين نضغط "I understand"
+                    log.info("🖱️ نضغط على 'I understand' مرة وحدة...")
+                    clicked = await self._click_i_understand(page)
+                    if clicked:
+                        self.tos_clicked = True
+                        log.info("✅ ضغطنا 'I understand' — نستنى Google")
+                        await human_delay(15, 20)  # ✅ انتظار طويل بعد الضغط
+                        continue
+                    else:
+                        log.warning("⚠️ ما لقيتش زر 'I understand'")
+                        await human_delay(5, 8)
+                        continue
+
+                # ✅ إذا ضغطنا قبل
                 if self.tos_clicked:
-                    # ✅ ضغطنا قبل — نستنى فقط
                     log.info("⏳ ضغطنا قبل — نستنى Google...")
-                    await human_delay(8, 12)
+                    await human_delay(15, 20)
 
                     new_url = page.url.lower()
                     if "workspacetermsofservice" not in new_url and "speedbump" not in new_url:
                         log.info("🎉 خرجنا من TOS!")
                         self.tos_clicked = False
+                        self.welcome_page_seen = False
                         continue
                     else:
-                        log.warning("⚠️ مازال فـ TOS")
+                        log.warning("⚠️ مازال فـ TOS — Google ما سجلتش")
+                        # ✅ نجربو مرة أخرى بعد انتظار طويل
+                        log.info("🔄 نحاول نضغط مرة أخرى...")
+                        clicked = await self._click_i_understand(page)
+                        if clicked:
+                            log.info("✅ ضغطنا مرة أخرى")
+                            await human_delay(15, 20)
                         continue
-                else:
-                    # ✅ أول مرة — نضغطو مرة وحدة
-                    log.info("🖱️ نضغط على Accept مرة وحدة...")
-                    clicked = await self._handle_welcome_page_once(page)
-                    if clicked:
-                        self.tos_clicked = True
-                        log.info("✅ ضغطنا — نستنى Google...")
-                        await human_delay(8, 12)
-                        continue
-                    else:
-                        log.warning("⚠️ ما لقيتش Accept")
-                        await human_delay(4, 6)
-                        continue
+                continue
 
             # ✅ 4. Sign in?
             if await self._is_signin_page(page):
@@ -113,12 +131,112 @@ class CloudConsole:
                 await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
                 raise RuntimeError("❌ كلمة السر غلط")
 
-            # ✅ 7. صفحة غير معروفة
+            # ✅ 7. صفحة غير معروفة — نستنى
             log.warning(f"❓ صفحة غير معروفة: {current_url[:100]}")
-            await human_delay(4, 6)
+            await human_delay(5, 8)
 
         await take_screenshot(page, "cc_final_fail")
         raise RuntimeError(f"❌ فشل بعد 10 محاولات\nURL: {page.url[:200]}")
+
+    # ==================== Helper: Click "I understand" ====================
+
+    async def _click_i_understand(self, page) -> bool:
+        """
+        يضغط على زر "I understand" بالضبط.
+        """
+        log.info("🔍 نبحث عن زر 'I understand'...")
+
+        # ✅ 1. نسجل الأزرار
+        try:
+            buttons = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll('button, a, [role="button"]');
+                    return Array.from(all).map((el, i) => ({
+                        idx: i,
+                        tag: el.tagName,
+                        text: (el.innerText || el.value || '').trim().substring(0, 60),
+                        visible: el.offsetParent !== null,
+                        disabled: el.disabled || false,
+                    })).filter(b => b.visible && !b.disabled && b.text);
+                }
+            """)
+            log.info(f"🔍 الأزرار الظاهرة: {buttons}")
+        except Exception as e:
+            log.warning(f"فشل جلب الأزرار: {e}")
+
+        # ✅ 2. نلقاو زر "I understand"
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll('button, a, [role="button"]');
+                    // الأولوية 1: exact "I understand"
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (t === 'i understand') {
+                            el.scrollIntoView({block: 'center'});
+                            el.focus();
+                            el.click();
+                            return { clicked: 'I understand (exact)', tag: el.tagName };
+                        }
+                    }
+                    // الأولوية 2: أي زر فيه "understand"
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (t.includes('understand')) {
+                            el.scrollIntoView({block: 'center'});
+                            el.focus();
+                            el.click();
+                            return { clicked: t, tag: el.tagName };
+                        }
+                    }
+                    // الأولوية 3: أي زر فيه "accept" / "agree"
+                    for (const el of all) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (t === 'accept' || t === 'agree' || t === 'i agree' ||
+                            t.includes('i agree')) {
+                            el.scrollIntoView({block: 'center'});
+                            el.focus();
+                            el.click();
+                            return { clicked: t, tag: el.tagName };
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ كليك: {clicked}")
+                return True
+        except Exception as e:
+            log.warning(f"JS: {e}")
+
+        # ✅ 3. Playwright احتياطي
+        for sel in [
+            'button:has-text("I understand")',
+            'button:has-text("I agree")',
+            'button:has-text("Accept")',
+            'button[type="submit"]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0:
+                    continue
+                if not await el.is_visible():
+                    continue
+                if await el.is_disabled():
+                    continue
+                log.info(f"✅ Playwright: {sel}")
+                await el.click(timeout=5000)
+                return True
+            except Exception:
+                continue
+
+        return False
 
     # ==================== Helpers ====================
 
@@ -199,7 +317,6 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # EMAIL
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -240,7 +357,7 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # ✅ CAPTCHA ذكي بعد email (مرة وحدة فقط)
+        # CAPTCHA بعد email (ذكي)
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page) and self.captcha_solved_count < 3:
@@ -252,7 +369,6 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"CAPTCHA بعد email: {e}")
 
-        # PASSWORD
         await human_delay(2, 4)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -315,84 +431,6 @@ class CloudConsole:
                     return
             except Exception:
                 continue
-
-    # ==================== Welcome — مرة وحدة ====================
-
-    async def _handle_welcome_page_once(self, page) -> bool:
-        """يضغط على "I understand" مرة وحدة فقط"""
-        await human_delay(3, 5)
-
-        # نسجل الأزرار
-        try:
-            buttons_info = await page.evaluate("""
-                () => {
-                    const all = document.querySelectorAll(
-                        'button, a, [role="button"], input[type="submit"]'
-                    );
-                    return Array.from(all).map((el, i) => ({
-                        idx: i,
-                        tag: el.tagName,
-                        text: (el.innerText || el.value || '').trim().substring(0, 60),
-                        visible: el.offsetParent !== null,
-                        disabled: el.disabled || false,
-                    }));
-                }
-            """)
-            log.info(f"🔍 الأزرار: {buttons_info}")
-        except Exception:
-            pass
-
-        # JS click — مرة وحدة
-        try:
-            clicked = await page.evaluate("""
-                () => {
-                    const exactTexts = ['i understand', 'i agree', 'i accept',
-                                      'accept', 'agree', 'confirm', 'got it',
-                                      'continue', 'ok', 'yes'];
-                    const all = document.querySelectorAll('button, a, [role="button"]');
-                    for (const el of all) {
-                        if (el.offsetParent === null) continue;
-                        if (el.disabled) continue;
-                        const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                        if (!rawText || rawText.length > 100) continue;
-                        const t = rawText.toLowerCase();
-                        for (const kw of exactTexts) {
-                            if (t === kw) {
-                                el.scrollIntoView({block: 'center'});
-                                el.focus();
-                                el.click();
-                                return { clicked: rawText, tag: el.tagName };
-                            }
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if clicked:
-                log.info(f"✅ كليك مرة وحدة: {clicked}")
-                return True
-        except Exception as e:
-            log.warning(f"JS: {e}")
-
-        # Playwright — مرة وحدة
-        for sel in [
-            'button:has-text("I understand")',
-            'button:has-text("Accept")',
-            'button[type="submit"]',
-        ]:
-            try:
-                el = page.locator(sel).first
-                if await el.count() == 0:
-                    continue
-                if not await el.is_visible():
-                    continue
-                log.info(f"✅ Playwright مرة وحدة: {sel}")
-                await el.click(timeout=5000)
-                return True
-            except Exception:
-                continue
-
-        return False
 
     async def _wait_for_console(self, page, timeout: int = 60000):
         try:
