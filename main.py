@@ -1,3 +1,4 @@
+import asyncio
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters,
@@ -11,67 +12,23 @@ from utils.logger import get_logger
 log = get_logger("Main")
 
 
-async def post_init(app):
+async def main():
+    log.info("🚀 بدء تشغيل البوت...")
     await init_db()
-    log.info("✅ DB ready")
-
-
-async def diag_cmd(update, context):
-    """أمر /diag — يعرض معلومات النظام"""
-    from utils.diagnostic import get_system_info
-    info = get_system_info()
-    text = "🔧 *معلومات النظام:*\n\n"
-    for k, v in info.items():
-        text += f"• `{k}`: `{v}`\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def route_text(update, context):
-    from database import db
-    from utils.helpers import extract_urls
-    try:
-        from automation.captcha_solver import set_captcha_solution, PENDING_CAPTCHA
-        has_captcha = True
-    except Exception:
-        has_captcha = False
-        PENDING_CAPTCHA = {}
-
-    user = update.effective_user
-    text = update.message.text or ""
-
-    # ✅ CAPTCHA
-    if has_captcha and user.id in PENDING_CAPTCHA and PENDING_CAPTCHA[user.id].get("waiting"):
-        set_captcha_solution(user.id, text)
-        await update.message.reply_text(
-            f"✅ تم استلام الحل: `{text}`",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ✅ SSO
-    if extract_urls(text):
-        await handlers.handle_url(update, context)
-        return
-
-    # ✅ password
-    session = await db.get_session(user.id)
-    if session and session.get("state") == "waiting_password":
-        await handlers.handle_password(update, context)
-
-
-def main():
-    log.info("🚀 starting...")
-    app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+    log.info("✅ تم تهيئة قاعدة البيانات")
+    app = Application.builder().token(config.BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("status", handlers.status_cmd))
     app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
-    app.add_handler(CommandHandler("diag", diag_cmd))
     app.add_handler(CallbackQueryHandler(handlers.button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
-    log.info("✅ running")
-    app.run_polling(allowed_updates=["message", "callback_query"])
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_url))
+    log.info("✅ البوت يعمل الآن.")
+    await app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("تم الإيقاف")
