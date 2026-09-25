@@ -24,7 +24,7 @@ class Config:
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
-    # ===== Proxy (اختياري) =====
+    # ===== Proxy =====
     PROXY_ENABLED = os.getenv("PROXY_ENABLED", "false").lower() == "true"
     PROXY_SERVER = os.getenv("PROXY_SERVER", "")
     PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
