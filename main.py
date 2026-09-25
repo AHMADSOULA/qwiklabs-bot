@@ -13,7 +13,7 @@ log = get_logger("Main")
 
 async def post_init(app):
     await init_db()
-    log.info("✅ تم تهيئة قاعدة البيانات")
+    log.info("✅ DB ready")
 
 
 async def route_text(update, context):
@@ -33,7 +33,7 @@ async def route_text(update, context):
 
 
 def main():
-    log.info("🚀 بدء تشغيل البوت...")
+    log.info("🚀 starting...")
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
@@ -41,7 +41,7 @@ def main():
     app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
     app.add_handler(CallbackQueryHandler(handlers.button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
-    log.info("✅ البوت يعمل الآن.")
+    log.info("✅ running")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 
