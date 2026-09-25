@@ -19,6 +19,60 @@ class QwikLabsSession:
         await human_delay(5, 8)
         return page
 
+    async def check_sso_valid(self, page) -> tuple:
+        """
+        يتحقق من صلاحية SSO.
+        يرجع (is_valid: bool, reason: str)
+        """
+        log.info("🔍 نتحقق من صلاحية SSO...")
+
+        try:
+            url = page.url.lower()
+            content = (await page.content()).lower()
+            text = (await page.inner_text("body")).lower()
+
+            # ✅ 1. صفحة منتهية
+            expired_keywords = [
+                "this lab is expired",
+                "lab has expired",
+                "lab expired",
+                "session has expired",
+                "session expired",
+                "this session has ended",
+                "lab is no longer available",
+                "cannot access",
+                "الرابط منتهي",
+            ]
+            for kw in expired_keywords:
+                if kw in content or kw in text:
+                    return False, "⏰ الرابط منتهي الصلاحية"
+
+            # ✅ 2. صفحة Sign in (ماشي SSO صحيح)
+            if "accounts.google.com" in url and "addsession" in url:
+                return False, "⚠️ الرابط ماشي SSO — هو Sign in مباشر"
+
+            # ✅ 3. صفحة SSO صحيحة
+            if "skills.google" in url or "qwiklabs" in url:
+                # ✅ نتحقق واش فيه email
+                m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
+                if m:
+                    log.info(f"✅ SSO صالح — email: {m.group(1)}")
+                    return True, f"✅ SSO صالح ({m.group(1)})"
+
+            # ✅ 4. صفحة فاضية / خطأ
+            if "not found" in text or "404" in text:
+                return False, "❌ الصفحة ماشي موجودة (404)"
+
+            # ✅ 5. إذا وصلنا لـ Lab (فيها credentials)
+            if "@qwiklabs.net" in content:
+                return True, "✅ SSO صالح — Lab page"
+
+            return True, "✅ SSO مقبول"
+
+        except Exception as e:
+            log.warning(f"فشل التحقق: {e}")
+            return True, f"⚠️ ما قدرناش نتحقق: {e}"
+
     async def extract_credentials(self, page):
         """يستخرج email + password (إذا موجود)"""
         log.info("استخراج credentials...")
