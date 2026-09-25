@@ -8,6 +8,8 @@ log = get_logger("CaptchaSolver")
 
 
 class CaptchaSolver:
+    """يحل CAPTCHA باستعمال TrueCaptcha API"""
+
     def __init__(self, userid: str, apikey: str):
         self.userid = userid
         self.apikey = apikey
@@ -77,7 +79,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
         from utils.screenshot import take_screenshot
         await take_screenshot(page, "captcha_check")
 
-        # ========== 1. البحث عن صورة CAPTCHA بـ JS ==========
+        # ========== 1. البحث عن صورة CAPTCHA ==========
         captcha_info = await page.evaluate("""
             () => {
                 const imgs = document.querySelectorAll('img');
@@ -93,8 +95,6 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
                             src: img.src.substring(0, 100),
                             alt: img.alt,
                             id: img.id,
-                            width: img.naturalWidth,
-                            height: img.naturalHeight,
                         };
                     }
                 }
@@ -107,7 +107,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
             log.info("✅ ما كاينش CAPTCHA")
             return False
 
-        log.info("🚨 CAPTCHA مطلوب! نحلو بـ TrueCaptcha...")
+        log.info("🚨 CAPTCHA مطلوب! نحلو...")
 
         # ========== 2. نصور الصورة ==========
         captcha_img = None
@@ -117,7 +117,6 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
             'img[id*="captcha"]',
             'img[class*="captcha"]',
             'img[src*="Captcha"]',
-            'img[src*="CaptchaImage"]',
         ]:
             try:
                 el = page.locator(sel).first
@@ -134,7 +133,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
 
         img_path = "/app/data/screenshots/captcha.png"
         await captcha_img.screenshot(path=img_path)
-        log.info(f"📸 حفظت CAPTCHA فـ {img_path}")
+        log.info(f"📸 حفظت CAPTCHA")
 
         # ========== 3. نحلها ==========
         solver = CaptchaSolver(userid, apikey)
@@ -146,10 +145,9 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
 
         log.info(f"✅ الحل: {solution}")
 
-        # ========== 4. نلقاو حقل الإدخال (بأي طريقة) ==========
+        # ========== 4. نلقاو حقل الإدخال ==========
         input_filled = False
 
-        # طريقة 1: selectors معروفة
         for sel in [
             'input[name="ca"]',
             'input[id="ca"]',
@@ -157,13 +155,17 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
             'input[id="captcha"]',
             'input[type="text"][aria-label*="Type the text" i]',
             'input[type="text"][aria-label*="characters" i]',
-            'input[type="text"][aria-label*="type the text" i]',
-            'input[aria-label*="Type the text" i]',
-            'input[aria-labelledby*="captcha" i]',
+            'input[type="text"]',
         ]:
             try:
                 inp = page.locator(sel).first
                 if await inp.count() > 0 and await inp.is_visible():
+                    # تأكد ماشي حقل الإيميل
+                    name = await inp.get_attribute("name") or ""
+                    id_attr = await inp.get_attribute("id") or ""
+                    if "email" in name.lower() or "identifier" in id_attr.lower():
+                        continue
+
                     log.info(f"✅ حقل CAPTCHA: {sel}")
                     await inp.click()
                     await asyncio.sleep(0.3)
@@ -178,82 +180,15 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
                         input_filled = True
                         break
             except Exception as e:
-                log.warning(f"فشل مع {sel}: {e}")
+                log.warning(f"فشل {sel}: {e}")
                 continue
-
-        # طريقة 2: JS — نلقاو أي input قريب من صورة CAPTCHA
-        if not input_filled:
-            log.info("🔍 نجرب JS للبحث عن الحقل...")
-            result = await page.evaluate("""
-                (args) => {
-                    // نلقاو كل الـ inputs
-                    const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-                    for (const inp of inputs) {
-                        if (inp.offsetParent === null) continue; // مخفي
-                        if (inp.value) continue; // فيه قيمة
-                        // نتأكدو ماشي حقل الإيميل
-                        const name = (inp.name || '').toLowerCase();
-                        const id = (inp.id || '').toLowerCase();
-                        if (name.includes('email') || id.includes('email')) continue;
-                        if (name.includes('identifier') || id.includes('identifier')) continue;
-
-                        inp.focus();
-                        inp.value = args.solution;
-                        inp.dispatchEvent(new Event('input', { bubbles: true }));
-                        inp.dispatchEvent(new Event('change', { bubbles: true }));
-                        return {
-                            filled: true,
-                            name: inp.name,
-                            id: inp.id,
-                            value: inp.value,
-                        };
-                    }
-                    return { filled: false };
-                }
-            """, {"solution": solution})
-            log.info(f"🔍 نتيجة JS: {result}")
-            if result.get("filled"):
-                input_filled = True
-
-        # طريقة 3: أي input text visible
-        if not input_filled:
-            for sel in [
-                'input[type="text"]',
-                'input:not([type])',
-            ]:
-                try:
-                    count = await page.locator(sel).count()
-                    for i in range(count):
-                        inp = page.locator(sel).nth(i)
-                        if await inp.is_visible():
-                            name = await inp.get_attribute("name") or ""
-                            id_attr = await inp.get_attribute("id") or ""
-                            if "email" in name.lower() or "email" in id_attr.lower():
-                                continue
-                            if "identifier" in name.lower() or "identifier" in id_attr.lower():
-                                continue
-
-                            await inp.click()
-                            await asyncio.sleep(0.3)
-                            await inp.fill(solution)
-                            await asyncio.sleep(0.5)
-                            val = await inp.input_value()
-                            if val.strip():
-                                log.info(f"✅ كتبت فـ input[{i}]: {val}")
-                                input_filled = True
-                                break
-                    if input_filled:
-                        break
-                except Exception:
-                    continue
 
         if not input_filled:
             log.error("❌ ما قدرتش نلقى حقل CAPTCHA")
-            await take_screenshot(page, "captcha_no_input")
             return False
 
-        await take_screenshot(page, "captcha_filled")
         log.info("✅ تم كتابة الحل")
+        await take_screenshot(page, "captcha_filled")
 
         # ========== 5. نضغط Next ==========
         await asyncio.sleep(0.5)
