@@ -17,11 +17,11 @@ class CloudConsole:
         self.password = password
 
         page = await self.context.new_page()
-        log.info("تسجيل الدخول إلى Cloud Console...")
+        log.info("تسجيل الدخول...")
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
         await take_screenshot(page, "cc_01_loaded")
-        log.info(f"URL بعد الفتح: {page.url}")
+        log.info(f"URL: {page.url}")
 
         try:
             for attempt in range(3):
@@ -30,16 +30,14 @@ class CloudConsole:
                 await take_screenshot(page, f"cc_iter_{attempt}")
                 log.info(f"URL: {page.url}")
 
-                # 1. Console جاهز؟
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
                     break
 
-                # 2. Sign in؟
                 if await self._is_signin_page(page):
-                    log.info(f"🔑 صفحة Sign in")
+                    log.info(f"🔑 Sign in")
 
-                    # نحل CAPTCHA أولاً
+                    # CAPTCHA أولاً
                     try:
                         from automation.captcha_solver import detect_and_solve_captcha
                         from config import config
@@ -52,48 +50,40 @@ class CloudConsole:
                         if solved:
                             log.info("✅ تم حل CAPTCHA")
                             await human_delay(4, 6)
-                            await take_screenshot(page, f"cc_after_captcha_{attempt}")
                             continue
                     except Exception as e:
                         log.warning(f"فشل CAPTCHA: {e}")
 
-                    # نسجلو
+                    # نكتب email + password
                     try:
                         await self._do_signin(page, self.username, self.password)
                         await human_delay(5, 7)
                         await take_screenshot(page, f"cc_after_signin_{attempt}")
                     except Exception as e:
-                        log.warning(f"فشل sign in: {e}")
+                        log.warning(f"فشل signin: {e}")
 
                     continue
 
-                # 3. Welcome؟
                 if await self._is_welcome_page(page):
-                    log.info("📋 Welcome — نضغط Accept")
-                    clicked = await self._handle_welcome_page(page)
-                    if clicked:
-                        await human_delay(4, 6)
+                    log.info("📋 Welcome — Accept")
+                    await self._handle_welcome_page(page)
+                    await human_delay(4, 6)
                     continue
 
-                # 4. كلمة سر غلط؟
                 if await self._has_wrong_password_error(page):
-                    await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
-                    raise RuntimeError("❌ كلمة السر غلط. جدد الرابط.")
+                    raise RuntimeError("❌ كلمة السر غلط")
 
-                # 5. Verify؟
                 if await self._has_verify_required(page):
-                    await take_screenshot(page, f"cc_verify_{attempt}")
-                    raise RuntimeError("❌ Google كتطلب verify.")
+                    raise RuntimeError("❌ Google كتطلب verify")
 
-                log.warning(f"❓ صفحة غير معروفة: {page.url[:100]}")
+                log.warning(f"❓ صفحة غير معروفة")
                 await human_delay(3, 5)
 
             await self._wait_for_console(page, timeout=30000)
-            log.info(f"✅ URL النهائي: {page.url}")
             return page
 
         except Exception as e:
-            log.error(f"فشل تسجيل الدخول: {e}")
+            log.error(f"فشل: {e}")
             await take_screenshot(page, "cc_error")
             raise
 
@@ -124,12 +114,9 @@ class CloudConsole:
     async def _has_wrong_password_error(self, page) -> bool:
         try:
             content = (await page.content()).lower()
-            for txt in ['incorrect password', 'wrong password']:
-                if txt in content:
-                    return True
+            return 'incorrect password' in content or 'wrong password' in content
         except Exception:
-            pass
-        return False
+            return False
 
     async def _has_verify_required(self, page) -> bool:
         try:
@@ -168,7 +155,7 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # ========== Email ==========
+        # Email
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -204,17 +191,13 @@ class CloudConsole:
                 continue
 
         if not email_filled:
-            body_text = await self._get_body_text(page)
-            raise RuntimeError(
-                f"❌ ما قدرتش نكتب الإيميل\n"
-                f"URL: {page.url[:150]}"
-            )
+            raise RuntimeError("❌ ما قدرتش نكتب الإيميل")
 
         await self._click_next(page, "email")
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # ========== CAPTCHA ==========
+        # CAPTCHA
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             from config import config
@@ -227,11 +210,10 @@ class CloudConsole:
             if solved:
                 log.info("✅ تم حل CAPTCHA")
                 await human_delay(4, 6)
-                await take_screenshot(page, "cc_after_captcha")
         except Exception as e:
             log.warning(f"فشل CAPTCHA: {e}")
 
-        # ========== Password ==========
+        # Password
         await human_delay(2, 3)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -245,7 +227,7 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ حقل كلمة السر: {sel}")
+                log.info(f"✅ حقل الباسورد: {sel}")
                 await el.click()
                 await human_delay(0.5, 1.0)
                 await el.fill("")
@@ -264,21 +246,15 @@ class CloudConsole:
                 if val.strip():
                     password_filled = True
                     break
-            except Exception as e:
-                log.warning(f"فشل pwd {sel}: {e}")
+            except Exception:
                 continue
 
         if not password_filled:
-            body_text = await self._get_body_text(page)
             await take_screenshot(page, "cc_no_pwd")
-            raise RuntimeError(
-                f"❌ ما قدرتش نكتب كلمة السر\n"
-                f"URL: {page.url[:150]}"
-            )
+            raise RuntimeError("❌ ما قدرتش نكتب الباسورد")
 
         await self._click_next(page, "password")
         await human_delay(4, 7)
-        await take_screenshot(page, "cc_after_pwd_next")
         log.info("✅ تم إدخال email + password")
 
     async def _click_next(self, page, step: str):
@@ -300,33 +276,31 @@ class CloudConsole:
             except Exception:
                 continue
 
-    async def _handle_welcome_page(self, page, max_attempts: int = 2) -> bool:
-        for attempt in range(max_attempts):
-            await human_delay(3, 5)
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll(
-                            'button, a, [role="button"], input[type="submit"]'
-                        );
-                        for (const el of all) {
-                            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                            if (text.includes('accept') || text.includes('agree') ||
-                                text.includes('confirm') || text.includes('got it')) {
-                                el.click();
-                                return el.innerText || 'clicked';
-                            }
+    async def _handle_welcome_page(self, page) -> bool:
+        await human_delay(3, 5)
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll(
+                        'button, a, [role="button"], input[type="submit"]'
+                    );
+                    for (const el of all) {
+                        const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                        if (text.includes('accept') || text.includes('agree') ||
+                            text.includes('confirm') || text.includes('got it')) {
+                            el.click();
+                            return el.innerText || 'clicked';
                         }
-                        return null;
                     }
-                """)
-                if clicked:
-                    log.info(f"✅ ضغط على: {clicked}")
-                    await human_delay(4, 6)
-                    return True
-            except Exception:
-                pass
-            break
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ ضغط على: {clicked}")
+                await human_delay(4, 6)
+                return True
+        except Exception:
+            pass
         return False
 
     async def _wait_for_console(self, page, timeout: int = 60000):
