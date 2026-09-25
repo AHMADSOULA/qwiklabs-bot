@@ -1,65 +1,86 @@
 import asyncio
 import aiohttp
 import base64
-import json
 from utils.logger import get_logger
 
 log = get_logger("CaptchaSolver")
 
 
 class CaptchaSolver:
-    def __init__(self, userid: str, apikey: str):
-        self.userid = userid
-        self.apikey = apikey
-        self.api_url = "https://api.apitruecaptcha.org/one/gettext"
+    """يحل CAPTCHA باستعمال CapSolver API"""
 
-    async def solve_image_captcha(self, image_path: str, length: int = 6) -> str:
-        if not self.userid or not self.apikey:
-            log.warning("⚠️ ما عنديش TrueCaptcha credentials")
+    def __init__(self, apikey: str):
+        self.apikey = apikey
+        self.create_url = "https://api.capsolver.com/createTask"
+        self.result_url = "https://api.capsolver.com/getTaskResult"
+
+    async def solve_image_captcha(self, image_path: str) -> str:
+        if not self.apikey:
+            log.warning("⚠️ ما عنديش CapSolver key")
             return None
+
         try:
             with open(image_path, "rb") as f:
                 image_data = f.read()
             b64 = base64.b64encode(image_data).decode()
+            log.info(f"📤 نرسل CAPTCHA ({len(image_data)} bytes)...")
 
             payload = {
-                "userid": self.userid,
-                "apikey": self.apikey,
-                "data": b64,
-                "case": "mixed",
-                "numeric": "false",
-                "len_str": str(length),
-                "tag": "qwiklabs-bot",
+                "clientKey": self.apikey,
+                "task": {
+                    "type": "ImageToTextTask",
+                    "body": b64,
+                },
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.api_url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
+                # 1. Create task
+                async with session.post(self.create_url, json=payload) as resp:
                     text = await resp.text()
-                    log.info(f"📥 TrueCaptcha: {text[:200]}")
-                    if resp.status != 200:
+                    log.info(f"📥 createTask: {text[:300]}")
+                    data = await resp.json()
+
+                    if data.get("errorId") != 0:
+                        log.error(f"فشل: {data.get('errorDescription')}")
                         return None
-                    try:
-                        data = json.loads(text)
-                    except Exception:
+
+                    task_id = data.get("taskId")
+                    if not task_id:
                         return None
-                    result = data.get("result")
-                    if result:
-                        log.info(f"✅ الحل: {result}")
-                        return result.strip()
-                    return None
-        except asyncio.TimeoutError:
-            log.error("⏰ Timeout")
-            return None
+
+                # 2. Poll result
+                for i in range(30):
+                    await asyncio.sleep(3)
+                    async with session.post(
+                        self.result_url,
+                        json={"clientKey": self.apikey, "taskId": task_id}
+                    ) as resp:
+                        res = await resp.json()
+                        status = res.get("status")
+
+                        if status == "ready":
+                            solution = res.get("solution", {}).get("text")
+                            log.info(f"✅ الحل: {solution}")
+                            return solution.strip() if solution else None
+                        elif status == "processing":
+                            continue
+                        elif res.get("errorId") != 0:
+                            log.error(f"فشل: {res.get('errorDescription')}")
+                            return None
+                        else:
+                            log.warning(f"رد غير متوقع: {res}")
+                            return None
+
+                log.error("⏰ Timeout")
+                return None
+
         except Exception as e:
-            log.error(f"فشل: {e}")
+            log.error(f"فشل CapSolver: {e}")
             return None
 
 
 async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
+    """userid ماشي مستعمل فـ CapSolver — غير apikey"""
     try:
         from utils.screenshot import take_screenshot
         await take_screenshot(page, "captcha_check")
@@ -107,12 +128,14 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
         img_path = "/app/data/screenshots/captcha.png"
         await captcha_img.screenshot(path=img_path)
 
-        solver = CaptchaSolver(userid, apikey)
-        solution = await solver.solve_image_captcha(img_path, length=6)
+        # CapSolver يستعمل apikey فقط
+        solver = CaptchaSolver(apikey)
+        solution = await solver.solve_image_captcha(img_path)
 
         if not solution:
             return False
 
+        # نكتب الحل
         input_filled = False
         for sel in [
             'input[name="ca"]',
@@ -143,6 +166,7 @@ async def detect_and_solve_captcha(page, userid: str, apikey: str) -> bool:
 
         await take_screenshot(page, "captcha_filled")
 
+        # Next
         await asyncio.sleep(0.5)
         for sel in [
             '#captchaNext',
