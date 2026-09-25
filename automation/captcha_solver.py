@@ -71,17 +71,10 @@ class TrueCaptchaSolver:
             return None
 
 
-async def detect_and_solve_captcha_api(page) -> str:
-    """
-    يكتشف CAPTCHA ويحلها عبر TrueCaptcha API.
-    يرجع النص إذا نجح.
-    """
+async def has_captcha(page) -> bool:
+    """يتحقق واش كاين CAPTCHA فـ الصفحة"""
     try:
-        from utils.screenshot import take_screenshot
-        await take_screenshot(page, "captcha_check")
-
-        # ✅ 1. نبحث عن صورة CAPTCHA
-        captcha_info = await page.evaluate("""
+        has = await page.evaluate("""
             () => {
                 const imgs = document.querySelectorAll('img');
                 for (const img of imgs) {
@@ -92,20 +85,45 @@ async def detect_and_solve_captcha_api(page) -> str:
                     const cls = (img.className || '').toString().toLowerCase();
                     if (src.includes('captcha') || alt.includes('captcha') ||
                         id.includes('captcha') || cls.includes('captcha')) {
-                        return { found: true, src: img.src.substring(0, 100) };
+                        return true;
                     }
                 }
-                return { found: false };
+                const inputs = document.querySelectorAll('input');
+                for (const inp of inputs) {
+                    if (inp.offsetParent === null) continue;
+                    const name = (inp.name || '').toLowerCase();
+                    const id = (inp.id || '').toLowerCase();
+                    const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+                    if (name === 'ca' || id === 'ca' || name === 'captcha' ||
+                        id === 'captcha' || aria.includes('type the text')) {
+                        return true;
+                    }
+                }
+                return false;
             }
         """)
+        return bool(has)
+    except Exception:
+        return False
 
-        if not captcha_info.get("found"):
+
+async def detect_and_solve_captcha(page) -> str:
+    """
+    يكتشف CAPTCHA ويحلها عبر TrueCaptcha API.
+    يرجع النص إذا نجح.
+    """
+    try:
+        from utils.screenshot import take_screenshot
+        await take_screenshot(page, "captcha_check")
+
+        # ✅ نفحصو واش كاين CAPTCHA
+        if not await has_captcha(page):
             log.info("✅ ما كاينش CAPTCHA")
             return None
 
         log.info("🚨 CAPTCHA detected — solving via TrueCaptcha...")
 
-        # ✅ 2. نصور الصورة
+        # ✅ نصور الصورة
         captcha_img = None
         for sel in [
             'img[src*="captcha"]',
@@ -130,38 +148,78 @@ async def detect_and_solve_captcha_api(page) -> str:
         await captcha_img.screenshot(path=img_path)
         log.info(f"📸 حفظت: {img_path}")
 
-        # ✅ 3. نحلها
+        # ✅ نحلها
         solver = TrueCaptchaSolver()
         solution = await solver.solve(img_path, length=6)
 
         if not solution:
             return None
 
-        return solution
+        # ✅ نكتب الحل
+        for sel in [
+            'input[name="ca"]',
+            'input[id="ca"]',
+            'input[name="captcha"]',
+            'input[id="captcha"]',
+            'input[type="text"][aria-label*="Type the text" i]',
+            'input[type="text"][aria-label*="characters" i]',
+        ]:
+            try:
+                inp = page.locator(sel).first
+                if await inp.count() == 0 or not await inp.is_visible():
+                    continue
+                name = (await inp.get_attribute("name") or "").lower()
+                id_attr = (await inp.get_attribute("id") or "").lower()
+                if "email" in name or "identifier" in id_attr:
+                    continue
+
+                log.info(f"✅ حقل CAPTCHA: {sel}")
+                await inp.click()
+                await asyncio.sleep(0.3)
+                await inp.fill("")
+                await asyncio.sleep(0.2)
+                await inp.fill(solution)
+                await asyncio.sleep(0.5)
+
+                val = await inp.input_value()
+                if val.strip():
+                    log.info(f"✍️ كتبت: {val}")
+
+                    # نضغط Next
+                    for btn_sel in [
+                        '#captchaNext',
+                        'button:has-text("Next")',
+                        'input[type="submit"]',
+                        'button[type="submit"]',
+                        '#identifierNext',
+                    ]:
+                        try:
+                            btn = page.locator(btn_sel).first
+                            if await btn.count() > 0 and await btn.is_visible():
+                                await btn.click()
+                                await asyncio.sleep(4)
+                                return solution
+                        except Exception:
+                            continue
+                    return solution
+            except Exception as e:
+                log.warning(f"فشل {sel}: {e}")
+                continue
+
+        return None
 
     except Exception as e:
         log.error(f"فشل CAPTCHA: {e}")
         return None
 
 
-# ✅ دالة قديمة (للتوافق) — كتستعمل الحل اليدوي
+# ✅ متغيرات قديمة للتوافق
 PENDING_CAPTCHA = {}
 
 
-async def detect_and_solve_captcha(page, user_id: int = None,
-                                    sender=None, context=None) -> str:
-    """نسخة قديمة — الحل اليدوي"""
-    return await detect_and_solve_captcha_api(page)
-
-
 def set_captcha_solution(user_id: int, solution: str):
-    if user_id in PENDING_CAPTCHA:
-        PENDING_CAPTCHA[user_id]["solution"] = solution.strip()
-        PENDING_CAPTCHA[user_id]["waiting"] = False
-        return True
     return False
 
 
 def cancel_captcha(user_id: int):
-    if user_id in PENDING_CAPTCHA:
-        PENDING_CAPTCHA[user_id]["waiting"] = False
+    pass
