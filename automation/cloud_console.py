@@ -135,4 +135,146 @@ class CloudConsole:
             'input[name="identifier"]',
         ]:
             try:
-               
+                if await page.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    async def _do_signin(self, page, username: str, password: str):
+        await take_screenshot(page, "cc_before_signin")
+
+        email_filled = False
+        for sel in [
+            'input[type="email"]',
+            'input[type="text"][name="identifier"]',
+            'input[name="identifier"]',
+            'input[autocomplete="username"]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0 or not await el.is_visible():
+                    continue
+                log.info(f"✅ email field: {sel}")
+                await el.click()
+                await human_delay(0.5, 1.0)
+                await el.fill("")
+                await el.fill(username)
+                await human_delay(0.3, 0.8)
+                val = await el.input_value()
+                if val.strip():
+                    email_filled = True
+                    break
+            except Exception as e:
+                log.warning(f"{sel}: {e}")
+                continue
+
+        if not email_filled:
+            raise RuntimeError("❌ فشل email")
+
+        await self._click_next(page, "email")
+        await human_delay(4, 6)
+        await take_screenshot(page, "cc_after_email")
+
+        # CAPTCHA
+        try:
+            from automation.captcha_solver import detect_and_solve_captcha
+            from config import config
+            await human_delay(1, 2)
+            solved = await detect_and_solve_captcha(
+                page, config.CAPTCHA_USERID, config.CAPTCHA_APIKEY
+            )
+            if solved:
+                await human_delay(4, 6)
+        except Exception as e:
+            log.warning(f"CAPTCHA: {e}")
+
+        await human_delay(2, 3)
+        await take_screenshot(page, "cc_before_pwd")
+
+        password_filled = False
+        for sel in [
+            'input[type="password"]',
+            'input[name="password"]',
+            'input[autocomplete="current-password"]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0 or not await el.is_visible():
+                    continue
+                log.info(f"✅ pwd field: {sel}")
+                await el.click()
+                await human_delay(0.5, 1.0)
+                await el.fill("")
+                await el.fill(password)
+                await human_delay(0.3, 0.8)
+                val = await el.input_value()
+                if val.strip():
+                    password_filled = True
+                    break
+            except Exception:
+                continue
+
+        if not password_filled:
+            await take_screenshot(page, "cc_no_pwd")
+            raise RuntimeError("❌ فشل pwd")
+
+        await self._click_next(page, "password")
+        await human_delay(4, 7)
+        log.info("✅ email + password")
+
+    async def _click_next(self, page, step: str):
+        for sel in [
+            '#identifierNext', '#passwordNext', '#captchaNext',
+            'button:has-text("Next")',
+            'div[role="button"]:has-text("Next")',
+            'button[type="submit"]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    log.info(f"كليك {sel}")
+                    await el.click()
+                    return
+            except Exception:
+                continue
+
+    async def _handle_welcome_page(self, page) -> bool:
+        await human_delay(3, 5)
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll('button, a, [role="button"]');
+                    for (const el of all) {
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t.includes('accept') || t.includes('agree') || t.includes('confirm')) {
+                            el.click();
+                            return t;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ {clicked}")
+                await human_delay(4, 6)
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _wait_for_console(self, page, timeout: int = 60000):
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const url = window.location.href;
+                    return url.includes('console.cloud.google.com') &&
+                           !url.includes('signin') &&
+                           !url.includes('accounts.google.com');
+                }""",
+                timeout=timeout,
+            )
+        except Exception:
+            log.warning("Timeout")
+        await human_delay(3, 5)
+        await take_screenshot(page, "cc_ready")
