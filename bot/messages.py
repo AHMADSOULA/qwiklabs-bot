@@ -1,25 +1,22 @@
 WELCOME = """
-👋 *مرحباً بك في بوت Google Cloud → Cloud Run*
+👋 *مرحباً بك في Qwiklabs → Cloud Run*
 
 📌 *طريقة الاستعمال:*
 1. افتح Google Skills واختر Lab
-2. انسخ رابط SSO من الصفحة
+2. انسخ رابط SSO
 3. أرسل الرابط هنا
 4. البوت سيدخل تلقائياً
-5. سينشر على Cloud Run
+5. ينشر على Cloud Run
 
-⚠️ الرابط صالح 5 ساعات فقط.
-
-الإعدادات الثابتة:
+⚙️ *الإعدادات:*
 🐳 `docker.io/ajndjd2/ahmed-vip1`
 📦 `ahmed-vip1`
 🌍 `us-central1`
-💾 `2Gi` | ⚙️ `2 vCPU`
+💾 `2Gi` | ⚙️ `2vCPU`
 """
 
 PROCESSING = "⏳ جاري المعالجة..."
-SUCCESS = "✅ *تم بنجاح!*\n\n{url}"
 FAILED = "❌ *فشل*\n\n{error}"
-NO_URL = "⚠️ أرسل رابط SSO صحيح من skills.google"
+NO_URL = "⚠️ أرسل رابط SSO صحيح"
 STATUS_TEMPLATE = "📊 *آخر {count} مهام:*\n\n{jobs}"
 JOB_LINE = "• `#{id}` — {status_emoji} {status} — {date}"
