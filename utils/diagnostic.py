@@ -23,6 +23,7 @@ class DiagnosticReport:
         self.errors = []
         self.screenshots = []
         self.metadata = {}
+        self.page_analysis = None
 
     def add_step(self, name: str, status: str, details: str = ""):
         elapsed = round(time.time() - self.start_time, 2)
@@ -50,6 +51,10 @@ class DiagnosticReport:
                 "path": path,
                 "caption": caption[:200],
             })
+
+    def add_page_analysis(self, analysis: dict):
+        """يضيف تحليل الصفحة"""
+        self.page_analysis = analysis
 
     def set_metadata(self, key: str, value):
         self.metadata[key] = value
@@ -80,16 +85,19 @@ class DiagnosticReport:
                     lines.append(f"      → {s['details']}")
             lines.append("")
 
+        # ✅ تحليل الصفحة
+        if self.page_analysis:
+            lines.append("🔍 تحليل الصفحة:")
+            for k, v in self.page_analysis.items():
+                lines.append(f"  • {k}: {v}")
+            lines.append("")
+
         if self.errors:
             lines.append("❌ الأخطاء:")
             for i, e in enumerate(self.errors, 1):
                 lines.append(f"  [{i}] {e['context']}")
                 lines.append(f"      Type: {e['type']}")
                 lines.append(f"      Message: {e['message']}")
-                if e['traceback']:
-                    lines.append(f"      Traceback:")
-                    for tb_line in e['traceback'].split('\n')[-10:]:
-                        lines.append(f"        {tb_line}")
                 lines.append("")
 
         if self.screenshots:
@@ -134,7 +142,105 @@ def end_report(job_id: int) -> str:
     return report.build_report()
 
 
+async def analyze_page(page) -> dict:
+    """
+    يحلل الصفحة ويعطي معلومات مفصلة.
+    """
+    try:
+        analysis = await page.evaluate("""
+            () => {
+                const result = {
+                    url: window.location.href.substring(0, 200),
+                    title: document.title || '',
+                    bodyText: (document.body.innerText || '').substring(0, 500).replace(/\\n/g, ' | '),
+                    inputs: [],
+                    buttons: [],
+                    images: [],
+                    iframes: 0,
+                    hasCaptcha: false,
+                    hasPassword: false,
+                    hasEmail: false,
+                    hasAccept: false,
+                    hasWelcome: false,
+                    hasVerify: false,
+                };
+
+                // Inputs
+                const inputs = document.querySelectorAll('input');
+                for (const inp of inputs) {
+                    if (inp.offsetParent === null) continue;
+                    result.inputs.push({
+                        type: inp.type || '',
+                        name: inp.name || '',
+                        id: inp.id || '',
+                        autocomplete: inp.autocomplete || '',
+                        value: (inp.value || '').substring(0, 50),
+                        ariaLabel: inp.getAttribute('aria-label') || '',
+                        placeholder: inp.placeholder || '',
+                    });
+                    if (inp.type === 'password') result.hasPassword = true;
+                    if (inp.type === 'email' || inp.name === 'identifier') result.hasEmail = true;
+                }
+
+                // Buttons
+                const buttons = document.querySelectorAll('button, a[role="button"], input[type="submit"]');
+                for (const btn of buttons) {
+                    if (btn.offsetParent === null) continue;
+                    const text = (btn.innerText || btn.value || '').trim();
+                    if (text.length > 0 && text.length < 100) {
+                        result.buttons.push({
+                            tag: btn.tagName,
+                            text: text.substring(0, 60),
+                            type: btn.type || '',
+                        });
+                        const t = text.toLowerCase();
+                        if (t.includes('accept') || t.includes('understand') ||
+                            t.includes('agree')) result.hasAccept = true;
+                    }
+                }
+
+                // Images
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    if (img.offsetParent === null) continue;
+                    const src = (img.src || '').substring(0, 100);
+                    const alt = img.alt || '';
+                    const id = img.id || '';
+                    const cls = (img.className || '').toString();
+                    result.images.push({
+                        src: src,
+                        alt: alt,
+                        id: id,
+                        cls: cls.substring(0, 50),
+                        width: img.naturalWidth,
+                        height: img.naturalHeight,
+                    });
+                    const fullSrc = (img.src || '').toLowerCase();
+                    if (fullSrc.includes('captcha') || alt.toLowerCase().includes('captcha') ||
+                        id.toLowerCase().includes('captcha') || cls.toLowerCase().includes('captcha')) {
+                        result.hasCaptcha = true;
+                    }
+                }
+
+                // iframes
+                result.iframes = document.querySelectorAll('iframe').length;
+
+                // Text checks
+                const bodyText = (document.body.innerText || '').toLowerCase();
+                if (bodyText.includes('welcome to your new account')) result.hasWelcome = true;
+                if (bodyText.includes('verify it') || bodyText.includes('2-step') ||
+                    bodyText.includes('enter the code')) result.hasVerify = true;
+
+                return result;
+            }
+        """)
+        return analysis
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def send_diagnostic(sender, job_id: int, error_msg: str = ""):
+    """يرسل التقرير للمستخدم"""
     report = get_report(job_id)
     if not report:
         await sender.reply_text(
