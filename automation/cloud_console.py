@@ -28,7 +28,6 @@ class CloudConsole:
         await take_screenshot(page, "cc_01_loaded")
         log.info(f"URL: {page.url}")
 
-        # ✅ حلقة كبيرة: 8 محاولات
         for attempt in range(8):
             log.info(f"========== محاولة {attempt + 1} ==========")
             await human_delay(2, 4)
@@ -36,13 +35,13 @@ class CloudConsole:
             current_url = page.url
             log.info(f"URL: {current_url}")
 
-            # ========== 1. Console ready? ==========
+            # 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ وصلنا للـ Console!")
                 await self._wait_for_console(page, timeout=30000)
                 return page
 
-            # ========== 2. Welcome / TOS / Speedbump? ==========
+            # 2. Welcome / TOS / Speedbump?
             if await self._is_welcome_page(page):
                 log.info("📋 Welcome/TOS/Speedbump — نحاول Accept")
                 clicked = await self._handle_welcome_page(page)
@@ -54,11 +53,11 @@ class CloudConsole:
                     await human_delay(4, 6)
                     continue
 
-            # ========== 3. Sign in? ==========
+            # 3. Sign in?
             if await self._is_signin_page(page):
                 log.info("🔑 Sign in")
 
-                # 3.1 نحل CAPTCHA أولاً (يدوياً)
+                # 3.1 CAPTCHA يدوياً
                 try:
                     from automation.captcha_solver import detect_and_solve_captcha
                     await human_delay(1, 2)
@@ -77,7 +76,7 @@ class CloudConsole:
                 except Exception as e:
                     log.warning(f"فشل CAPTCHA: {e}")
 
-                # 3.2 نسجلو (email + password)
+                # 3.2 تسجيل
                 try:
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 8)
@@ -88,17 +87,17 @@ class CloudConsole:
 
                 continue
 
-            # ========== 4. Verify? ==========
+            # 4. Verify?
             if await self._has_verify_required(page):
                 await take_screenshot(page, f"cc_verify_{attempt}")
                 raise RuntimeError("❌ Google كتطلب verify")
 
-            # ========== 5. كلمة سر غلط؟ ==========
+            # 5. كلمة سر غلط؟
             if await self._has_wrong_password_error(page):
                 await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
                 raise RuntimeError("❌ كلمة السر غلط")
 
-            # ========== 6. صفحة غير معروفة ==========
+            # 6. صفحة غير معروفة
             log.warning(f"❓ صفحة غير معروفة: {current_url[:100]}")
             await human_delay(4, 6)
 
@@ -242,7 +241,7 @@ class CloudConsole:
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # ===== EMAIL =====
+        # EMAIL
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -284,7 +283,7 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # ===== CAPTCHA بعد email =====
+        # CAPTCHA بعد email
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             await human_delay(1, 2)
@@ -301,7 +300,7 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"فشل CAPTCHA: {e}")
 
-        # ===== PASSWORD =====
+        # PASSWORD
         await human_delay(2, 4)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -376,7 +375,7 @@ class CloudConsole:
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # ✅ 1. تسجيل الأزرار الموجودة
+            # ✅ 1. تسجيل الأزرار
             try:
                 buttons_info = await page.evaluate("""
                     () => {
@@ -399,37 +398,62 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"فشل جلب الأزرار: {e}")
 
-            # ✅ 2. JS click — keywords (12 كلمة)
+            # ✅ 2. JS click — 3 أولويات
             try:
                 clicked = await page.evaluate("""
                     () => {
-                        const keywords = [
+                        // الأولوية 1: exact match
+                        const exactTexts = [
+                            'i understand', 'i agree', 'i accept',
                             'accept', 'agree', 'confirm', 'got it',
-                            'i agree', 'i understand', 'i accept',
-                            'continue', 'ok', 'yes', 'allow', 'submit',
-                            'قبول', 'موافق', 'أوافق', 'متابعة', 'أفهم'
+                            'continue', 'ok', 'yes',
+                            'أفهم', 'قبول', 'موافق'
                         ];
-                        const all = document.querySelectorAll(
-                            'button, a, [role="button"], input[type="submit"], input[type="button"]'
-                        );
+                        const all = document.querySelectorAll('button, a, [role="button"]');
                         for (const el of all) {
                             if (el.offsetParent === null) continue;
                             if (el.disabled) continue;
                             const rawText = (el.innerText || el.value || el.textContent || '').trim();
-                            if (!rawText) continue;
-                            if (rawText.length > 100) continue;
+                            if (!rawText || rawText.length > 100) continue;
                             const t = rawText.toLowerCase();
-                            for (const kw of keywords) {
-                                if (t === kw || t.startsWith(kw) || t.includes(kw)) {
+                            for (const kw of exactTexts) {
+                                if (t === kw) {
+                                    el.scrollIntoView({block: 'center'});
                                     el.click();
-                                    return {
-                                        clicked: rawText.substring(0, 100),
-                                        tag: el.tagName,
-                                        cls: (el.className || '').toString().substring(0, 50),
-                                    };
+                                    return { clicked: rawText, tag: el.tagName, method: 'exact_match' };
                                 }
                             }
                         }
+
+                        // الأولوية 2: includes
+                        for (const el of all) {
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const rawText = (el.innerText || el.value || el.textContent || '').trim();
+                            if (!rawText || rawText.length > 100) continue;
+                            const t = rawText.toLowerCase();
+                            if (t.includes('understand') || t.includes('accept') ||
+                                t.includes('agree') || t.includes('continue') ||
+                                t.includes('got it') || t.includes('confirm')) {
+                                el.scrollIntoView({block: 'center'});
+                                el.click();
+                                return { clicked: rawText, tag: el.tagName, method: 'includes' };
+                            }
+                        }
+
+                        // الأولوية 3: submit button
+                        const submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+                        for (const el of submits) {
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const rawText = (el.innerText || el.value || '').trim();
+                            if (rawText.length < 100) {
+                                el.scrollIntoView({block: 'center'});
+                                el.click();
+                                return { clicked: rawText || 'submit', tag: el.tagName, method: 'submit_type' };
+                            }
+                        }
+
                         return null;
                     }
                 """)
@@ -440,35 +464,7 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"JS: {e}")
 
-            # ✅ 3. JS exact match
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
-                        for (const el of all) {
-                            if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (t.length > 0 && t.length < 100) {
-                                if (t === 'i understand' || t === 'i agree' || t === 'i accept' ||
-                                    t === 'accept' || t === 'agree' || t === 'continue' ||
-                                    t === 'got it' || t === 'ok' || t === 'yes') {
-                                    el.click();
-                                    return { clicked: t, tag: el.tagName };
-                                }
-                            }
-                        }
-                        return null;
-                    }
-                """)
-                if clicked:
-                    log.info(f"✅ exact click: {clicked}")
-                    await human_delay(5, 8)
-                    return True
-            except Exception:
-                pass
-
-            # ✅ 4. Playwright locators
+            # ✅ 3. Playwright locators
             selectors = [
                 'button:has-text("I understand")',
                 'button:has-text("I agree")',
@@ -490,28 +486,31 @@ class CloudConsole:
                 '[role="button"]:has-text("Agree")',
                 'input[value*="I understand" i]',
                 'input[value*="Accept" i]',
-                'input[type="submit"]',
                 'button[type="submit"]',
+                'input[type="submit"]',
+                'button.VfPpkd-LgbsSe[type="submit"]',
+                '.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
             ]
             for sel in selectors:
                 try:
-                    el = page.locator(sel).first
-                    if await el.count() == 0:
-                        continue
-                    try:
-                        if not await el.is_visible():
+                    els = await page.locator(sel).all()
+                    for el in els:
+                        try:
+                            if not await el.is_visible():
+                                continue
+                            if await el.is_disabled():
+                                continue
+                            log.info(f"✅ كليك {sel}")
+                            await el.click(force=True, timeout=5000)
+                            await human_delay(5, 8)
+                            return True
+                        except Exception:
                             continue
-                    except Exception:
-                        pass
-                    log.info(f"✅ كليك {sel}")
-                    await el.click(force=True, timeout=5000)
-                    await human_delay(5, 8)
-                    return True
                 except Exception as e:
                     log.warning(f"{sel}: {e}")
                     continue
 
-            # ✅ 5. Blue button (Google)
+            # ✅ 4. Blue button (Google)
             try:
                 clicked = await page.evaluate("""
                     () => {
@@ -523,7 +522,9 @@ class CloudConsole:
                             if (rawText.length > 100) continue;
                             const bg = window.getComputedStyle(el).backgroundColor;
                             if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
-                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)') {
+                                bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)' ||
+                                bg === 'rgb(13, 101, 45)' || bg === 'rgb(24, 90, 188)') {
+                                el.scrollIntoView({block: 'center'});
                                 el.click();
                                 return { text: rawText.substring(0, 50), bg: bg };
                             }
@@ -538,7 +539,7 @@ class CloudConsole:
             except Exception:
                 pass
 
-            # ✅ 6. آخر زر visible
+            # ✅ 5. آخر زر visible
             try:
                 result = await page.evaluate("""
                     () => {
@@ -546,12 +547,13 @@ class CloudConsole:
                         const visible = Array.from(all).filter(b => 
                             b.offsetParent !== null && !b.disabled
                         );
-                        if (visible.length > 0) {
-                            const last = visible[visible.length - 1];
-                            const text = (last.innerText || last.value || '').trim();
+                        for (let i = visible.length - 1; i >= 0; i--) {
+                            const el = visible[i];
+                            const text = (el.innerText || el.value || '').trim();
                             if (text.length < 100) {
-                                last.click();
-                                return { clicked: 'last', text: text.substring(0, 80) };
+                                el.scrollIntoView({block: 'center'});
+                                el.click();
+                                return { clicked: 'last', text: text.substring(0, 80), idx: i };
                             }
                         }
                         return null;
