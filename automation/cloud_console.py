@@ -14,7 +14,7 @@ class CloudConsole:
         self.user_id = None
         self.sender = None
         self.captcha_count = 0
-        self.tos_clicked = False
+        self.speedbump_attempts = 0
 
     async def login(self, username: str, password: str, user_id: int = None, sender=None):
         self.username = username
@@ -28,10 +28,11 @@ class CloudConsole:
         await human_delay(3, 5)
         await take_screenshot(page, "cc_loaded")
 
-        for attempt in range(6):
+        for attempt in range(8):
             log.info(f"=== محاولة {attempt + 1} ===")
             await human_delay(2, 3)
             await take_screenshot(page, f"cc_attempt_{attempt}")
+            log.info(f"URL: {page.url[:120]}")
 
             # ✅ 1. Console ready?
             if await self._is_console_ready(page):
@@ -39,10 +40,19 @@ class CloudConsole:
                 await human_delay(3, 5)
                 return page
 
-            # ✅ 2. Dialog / TOS
-            if await self._handle_dialog(page):
-                await human_delay(5, 8)
-                continue
+            # ✅ 2. Speedbump / TOS / Welcome
+            if await self._is_speedbump_or_tos(page):
+                log.info("📋 Speedbump/TOS — نعالجو")
+                handled = await self._handle_speedbump(page)
+                if handled:
+                    self.speedbump_attempts += 1
+                    log.info(f"✅ TOS {self.speedbump_attempts}")
+                    await human_delay(10, 15)  # ✅ انتظار طويل بعد
+                    continue
+                else:
+                    log.warning("⚠️ ما قدرناش نعالجو TOS")
+                    await human_delay(5, 8)
+                    continue
 
             # ✅ 3. CAPTCHA
             try:
@@ -78,92 +88,213 @@ class CloudConsole:
             await human_delay(4, 6)
 
         await take_screenshot(page, "cc_final")
-        raise RuntimeError(f"❌ فشل بعد 6 محاولات\nURL: {page.url[:200]}")
+        raise RuntimeError(f"❌ فشل بعد 8 محاولات\nURL: {page.url[:200]}")
 
-    # ============ Dialog ============
+    # ==================== Speedbump / TOS ====================
 
-    async def _handle_dialog(self, page) -> bool:
-        """يتعامل مع Dialog (TOS / Welcome)"""
+    async def _is_speedbump_or_tos(self, page) -> bool:
+        """يتحقق واش صفحة Speedbump/TOS"""
+        url = page.url.lower()
+        if "speedbump" in url or "workspacetermsofservice" in url:
+            return True
+
+        # من نص الصفحة
         try:
-            has = await page.evaluate("""
+            text = (await page.inner_text("body")).lower()
+            if "welcome to your new account" in text:
+                return True
+            if "terms of service" in text and ("i agree" in text or "i understand" in text):
+                return True
+            if "google cloud platform terms" in text:
+                return True
+        except Exception:
+            pass
+
+        # من checkbox
+        try:
+            cb_count = await page.locator('input[type="checkbox"]').count()
+            if cb_count > 0:
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _handle_speedbump(self, page) -> bool:
+        """يتعامل مع صفحة Speedbump/TOS"""
+        log.info("🔍 نحلل صفحة Speedbump...")
+
+        # ✅ 1. نسجل كل العناصر
+        try:
+            info = await page.evaluate("""
                 () => {
-                    for (const d of document.querySelectorAll('[role="dialog"], mat-dialog-container, .modal')) {
-                        if (d.offsetParent === null) continue;
-                        const t = (d.innerText || '').toLowerCase();
-                        if (t.includes('terms of service') || t.includes('i agree') || t.includes('welcome student')) return true;
-                    }
+                    const r = {
+                        url: window.location.href,
+                        checkboxes: [],
+                        buttons: [],
+                        selects: [],
+                        text_snippet: (document.body.innerText || '').substring(0, 300),
+                    };
                     for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                        if (cb.offsetParent !== null) return true;
+                        if (cb.offsetParent === null) continue;
+                        r.checkboxes.push({
+                            name: cb.name || '',
+                            id: cb.id || '',
+                            checked: cb.checked,
+                        });
                     }
-                    return false;
+                    for (const b of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
+                        if (b.offsetParent === null) continue;
+                        const t = (b.innerText || b.value || '').trim();
+                        if (t && t.length < 100) {
+                            r.buttons.push({
+                                tag: b.tagName,
+                                text: t.substring(0, 60),
+                                disabled: b.disabled || false,
+                            });
+                        }
+                    }
+                    for (const s of document.querySelectorAll('select')) {
+                        if (s.offsetParent === null) continue;
+                        r.selects.push({
+                            name: s.name || '',
+                            id: s.id || '',
+                            value: s.value,
+                        });
+                    }
+                    return r;
                 }
             """)
-            if not has:
-                return False
+            log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
+            log.info(f"📋 Buttons: {info.get('buttons')}")
+            log.info(f"📋 Selects: {info.get('selects')}")
+        except Exception as e:
+            log.warning(f"فشل تحليل: {e}")
 
-            log.info("📋 Dialog — نضغط checkbox + Continue")
+        # ✅ 2. نختار Country (إذا كان)
+        try:
+            selects = page.locator('select')
+            cnt = await selects.count()
+            if cnt > 0:
+                sel = selects.first
+                current = await sel.input_value()
+                log.info(f"🌍 Country الحالي: {current}")
+                # ✅ نختار United States إذا ما كانش
+                if not current or current == "":
+                    try:
+                        await sel.select_option(label="United States")
+                        log.info("✅ اخترنا United States")
+                    except Exception:
+                        try:
+                            await sel.select_option(value="US")
+                        except Exception:
+                            pass
+                    await human_delay(1, 2)
+        except Exception as e:
+            log.warning(f"select: {e}")
 
-            # checkbox
-            try:
-                await page.evaluate("""
-                    () => {
-                        for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                            if (cb.offsetParent === null || cb.checked) continue;
-                            cb.scrollIntoView({block: 'center'});
-                            const lb = cb.closest('label');
-                            if (lb) lb.click(); else cb.click();
-                            cb.dispatchEvent(new Event('change', { bubbles: true }));
-                            return true;
+        # ✅ 3. نضغط على checkbox
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                        if (cb.offsetParent === null) continue;
+                        if (cb.checked) return { already: true };
+                        
+                        // ✅ scroll + focus
+                        cb.scrollIntoView({block: 'center'});
+                        cb.focus();
+                        
+                        // ✅ label click
+                        const label = cb.closest('label');
+                        if (label) {
+                            label.click();
+                        } else {
+                            cb.click();
                         }
-                        return false;
+                        
+                        // ✅ events
+                        cb.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        cb.dispatchEvent(new Event('change', { bubbles: true }));
+                        
+                        return { checked: cb.checked };
                     }
-                """)
-                await human_delay(1, 2)
-            except Exception:
-                pass
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ Checkbox: {clicked}")
+                await human_delay(2, 3)
+        except Exception as e:
+            log.warning(f"checkbox: {e}")
 
-            # Continue
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const kws = ['continue', 'agree', 'accept', 'i agree', 'ok', 'yes'];
-                        for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
-                            if (el.offsetParent === null || el.disabled) continue;
-                            const t = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!t || t.length > 100) continue;
-                            for (const kw of kws) {
-                                if (t === kw || t.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.click();
-                                    return t;
-                                }
+        # ✅ 4. نضغط على Continue
+        await human_delay(2, 3)
+
+        try:
+            clicked = await page.evaluate("""
+                async () => {
+                    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                    const keywords = ['continue', 'agree', 'accept', 'submit', 'ok', 'yes', 'i agree'];
+                    
+                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
+                        if (el.offsetParent === null) continue;
+                        if (el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (!t || t.length > 100) continue;
+                        
+                        for (const kw of keywords) {
+                            if (t === kw || t.includes(kw)) {
+                                el.scrollIntoView({block: 'center'});
+                                el.focus();
+                                await sleep(300);
+                                
+                                // ✅ 5 أحداث
+                                el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                el.click();
+                                
+                                return { clicked: t.substring(0, 50), tag: el.tagName };
                             }
                         }
-                        return null;
                     }
-                """)
-                if clicked:
-                    log.info(f"✅ ضغطنا: {clicked}")
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ Continue: {clicked}")
+                await human_delay(5, 8)
+                return True
+        except Exception as e:
+            log.warning(f"continue: {e}")
+
+        # ✅ 5. Playwright fallback
+        for sel in [
+            'button:has-text("Continue")',
+            'button:has-text("Agree")',
+            'button:has-text("Accept")',
+            'button:has-text("I agree")',
+            '[role="button"]:has-text("Continue")',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible() and not await el.is_disabled():
+                    log.info(f"✅ Playwright: {sel}")
+                    try:
+                        await el.click(timeout=3000)
+                    except Exception:
+                        await el.click(force=True, timeout=3000)
                     await human_delay(5, 8)
                     return True
             except Exception:
-                pass
+                continue
 
-            # Playwright fallback
-            for sel in ['button:has-text("Continue")', 'button:has-text("Accept")', 'button:has-text("I agree")']:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        await el.click(timeout=3000)
-                        return True
-                except Exception:
-                    continue
-            return False
-        except Exception as e:
-            log.warning(f"Dialog: {e}")
-            return False
+        return False
 
-    # ============ Sign In ============
+    # ==================== Sign In ====================
 
     async def _is_signin(self, page) -> bool:
         url = page.url.lower()
@@ -187,7 +318,7 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ email field: {sel}")
+                log.info(f"✅ email: {sel}")
                 await el.click()
                 await human_delay(0.5, 1)
                 await el.fill("")
@@ -197,7 +328,6 @@ class CloudConsole:
                 if (await el.input_value()).strip():
                     email_filled = True
                     break
-                # type fallback
                 await el.click()
                 await page.keyboard.type(self.username, delay=60)
                 await human_delay(1, 2)
@@ -214,7 +344,7 @@ class CloudConsole:
         await human_delay(5, 8)
         await take_screenshot(page, "cc_after_email")
 
-        # CAPTCHA بعد email
+        # CAPTCHA
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             if await has_captcha(page) and self.captcha_count < 5:
@@ -235,7 +365,7 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ pwd field: {sel}")
+                log.info(f"✅ pwd: {sel}")
                 await el.click()
                 await human_delay(0.5, 1)
                 await el.fill("")
