@@ -42,4 +42,90 @@ Object.defineProperty(navigator, 'mimeTypes', {
 // 5. WebGL
 const getParameter = WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter = function(parameter) {
-    if (parameter === 37445) return 'Intel Inc.
+    if (parameter === 37445) return 'Intel Inc.';
+    if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+    return getParameter.call(this, parameter);
+};
+const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+    if (parameter === 37445) return 'Intel Inc.';
+    if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+    return getParameter2.call(this, parameter);
+};
+
+// 6. Permissions
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+);
+
+// 7. Chrome Runtime
+window.chrome = {
+    runtime: {},
+    loadTimes: function() {},
+    csi: function() {},
+    app: {
+        isInstalled: false,
+        InstallState: {
+            DISABLED: 'disabled',
+            INSTALLED: 'installed',
+            NOT_INSTALLED: 'not_installed'
+        },
+        RunningState: {
+            CANNOT_RUN: 'cannot_run',
+            READY_TO_RUN: 'ready_to_run',
+            RUNNING: 'running'
+        }
+    }
+};
+
+// 8. Connection
+Object.defineProperty(navigator, 'connection', {
+    get: () => ({
+        effectiveType: '4g',
+        rtt: 50,
+        downlink: 10,
+        saveData: false
+    })
+});
+
+// 9. toString Protection
+const originalToString = Function.prototype.toString;
+Function.prototype.toString = function() {
+    if (this === navigator.permissions.query) {
+        return 'function query() { [native code] }';
+    }
+    if (this === WebGLRenderingContext.prototype.getParameter) {
+        return 'function getParameter() { [native code] }';
+    }
+    return originalToString.call(this);
+};
+
+// 10. Screen
+Object.defineProperty(screen, 'width', { get: () => 1920 });
+Object.defineProperty(screen, 'height', { get: () => 1080 });
+Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
+Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
+Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+
+// 11. UserAgent Data
+Object.defineProperty(navigator, 'userAgentData', {
+    get: () => ({
+        brands: [
+            { brand: 'Not_A Brand', version: '8' },
+            { brand: 'Chromium', version: '131' },
+            { brand: 'Google Chrome', version: '131' },
+        ],
+        mobile: false,
+        platform: 'Windows',
+    })
+});
+
+// 12. Notification
+Object.defineProperty(Notification, 'permission', {
+    get: () => 'default'
+});
+"""
