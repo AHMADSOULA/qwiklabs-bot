@@ -1,5 +1,5 @@
 import asyncio
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
@@ -47,16 +47,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await db.clear_session(user.id)
-    b = context.bot_data.pop(f"browser_{user.id}", None)
-    context.bot_data.pop(f"page_{user.id}", None)
-    context.bot_data.pop(f"ctx_{user.id}", None)
-    if b:
-        try:
-            await b.close()
-        except Exception:
-            pass
     await update.message.reply_text("🚫 تم الإلغاء.")
 
 
