@@ -51,11 +51,9 @@ class CloudConsole:
                 # ✅ نبحث عن الزر الأزرق ونرسل اسمه
                 button_info = await self._find_blue_button_info(page)
 
-                if button_info:
-                    # ✅ نرسل اسم الزر فـ البوت
+                if button_info.get("button"):
                     await self._notify_button(page, button_info)
 
-                    # ✅ نضغط عليه
                     clicked = await self._click_button(page, button_info)
                     if clicked:
                         log.info("✅ ضغطنا — ننتظر")
@@ -73,7 +71,7 @@ class CloudConsole:
                     await self._raise_problem(
                         page,
                         "🔴 ما لقيناش زر أزرق",
-                        "الصفحة فيها TOS ولكن ما لقيناش زر أزرق"
+                        f"source: {button_info.get('source')}"
                     )
 
             # ✅ 3. CAPTCHA
@@ -130,9 +128,6 @@ class CloudConsole:
     # ==================== Find Blue Button Info ====================
 
     async def _find_blue_button_info(self, page) -> dict:
-        """
-        يبحث عن الزر الأزرق ويرجع معلوماتو الكاملة.
-        """
         log.info("🔍 نبحث عن الزر الأزرق...")
 
         try:
@@ -143,7 +138,6 @@ class CloudConsole:
                         blue_buttons: [],
                     };
 
-                    // ✅ كل الأزرار القابلة للنقر
                     const all = document.querySelectorAll(
                         'button, a, input[type="submit"], input[type="button"], [role="button"]'
                     );
@@ -165,14 +159,13 @@ class CloudConsole:
                             w: rect.width,
                             h: rect.height,
                             disabled: el.disabled || false,
-                            visible: rect.width > 0 && rect.height > 0,
                             id: el.id || '',
                             cls: (el.className || '').toString().substring(0, 80),
                         };
 
                         result.all_buttons.push(btn);
 
-                        // ✅ الزر الأزرق (Google Material)
+                        // ✅ كشف الزر الأزرق — 10 ألوان
                         const is_blue = (
                             bg === 'rgb(26, 115, 232)' ||
                             bg === 'rgb(66, 133, 244)' ||
@@ -180,12 +173,18 @@ class CloudConsole:
                             bg === 'rgb(21, 101, 192)' ||
                             bg === 'rgb(13, 101, 45)' ||
                             bg === 'rgb(24, 90, 188)' ||
+                            bg === 'rgb(11, 87, 208)' ||
                             bg === 'rgb(0, 123, 255)' ||
+                            bg === 'rgb(1, 87, 155)' ||
                             bg.includes('26, 115') ||
-                            bg.includes('66, 133')
+                            bg.includes('66, 133') ||
+                            bg.includes('11, 87') ||
+                            bg.includes('23, 78')
                         );
 
-                        if (is_blue && !el.disabled && rect.width > 0) {
+                        const has_understand = text.toLowerCase().includes('understand');
+
+                        if ((is_blue || has_understand) && !el.disabled && rect.width > 0) {
                             result.blue_buttons.push(btn);
                         }
                     }
@@ -197,10 +196,16 @@ class CloudConsole:
             log.info(f"📋 كل الأزرار: {info.get('all_buttons', [])}")
             log.info(f"🔵 الأزرار الزرقاء: {info.get('blue_buttons', [])}")
 
-            # ✅ نرجع أفضل زر أزرق
             blue = info.get("blue_buttons", [])
             if blue:
-                # ✅ نختار الزر اللي فيه نص
+                with_understand = [b for b in blue if 'understand' in b.get('text', '').lower()]
+                if with_understand:
+                    return {
+                        "button": with_understand[0],
+                        "all_buttons": info.get("all_buttons", []),
+                        "all_blue": blue,
+                        "source": "understand",
+                    }
                 with_text = [b for b in blue if b.get("text")]
                 if with_text:
                     return {
@@ -229,26 +234,17 @@ class CloudConsole:
     # ==================== Notify Button Info ====================
 
     async def _notify_button(self, page, info: dict):
-        """
-        يرسل معلومات الزر فـ Telegram + يسجلها فـ Logs.
-        """
         btn = info.get("button")
         source = info.get("source", "")
         all_buttons = info.get("all_buttons", [])
 
-        # ✅ نسجل فـ Logs
         log.info(f"🔵 معلومات الزر الأزرق (source: {source}):")
         if btn:
             log.info(f"   • النص: '{btn.get('text', '')}'")
             log.info(f"   • Tag: {btn.get('tag', '')}")
-            log.info(f"   • Type: {btn.get('type', '')}")
             log.info(f"   • bg: {btn.get('bg', '')}")
-            log.info(f"   • id: {btn.get('id', '')}")
-            log.info(f"   • cls: {btn.get('cls', '')}")
             log.info(f"   • الإحداثيات: ({btn.get('x', 0)}, {btn.get('y', 0)})")
-            log.info(f"   • الحجم: {btn.get('w', 0)} x {btn.get('h', 0)}")
 
-        # ✅ نرسل فـ Telegram
         if not self.sender:
             return
 
@@ -262,18 +258,14 @@ class CloudConsole:
 `{btn.get('text', '(فارغ)')}`
 
 🏷️ *Tag:* `{btn.get('tag', '')}`
-📌 *Type:* `{btn.get('type', '')}`
 🎨 *bg:* `{btn.get('bg', '')}`
-🆔 *id:* `{btn.get('id', '(لا يوجد)')}`
-🏷️ *Class:* `{btn.get('cls', '')[:60]}`
 📍 *إحداثيات:* `({btn.get('x', 0)}, {btn.get('y', 0)})`
 📐 *حجم:* `{btn.get('w', 0)} x {btn.get('h', 0)}`
 """
         else:
             msg += "⚠️ ما لقيناش زر أزرق\n\n"
 
-        # ✅ نضيف كل الأزرار
-        msg += "\n*كل الأزرار على الصفحة:*\n"
+        msg += "\n*كل الأزرار:*\n"
         for b in all_buttons[:10]:
             text = b.get('text', '')[:40] or '(فارغ)'
             bg = b.get('bg', '')
@@ -282,8 +274,7 @@ class CloudConsole:
 
         try:
             await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
-        except Exception as e:
-            log.warning(f"فشل إرسال: {e}")
+        except Exception:
             try:
                 await self.sender.reply_text(msg[:4000])
             except Exception:
@@ -292,9 +283,6 @@ class CloudConsole:
     # ==================== Click Button ====================
 
     async def _click_button(self, page, info: dict) -> bool:
-        """
-        يضغط على الزر اللي لقيناه.
-        """
         btn = info.get("button")
         if not btn:
             return False
@@ -305,7 +293,29 @@ class CloudConsole:
 
         log.info(f"🖱️ نضغط على: '{text}' فـ ({x}, {y})")
 
-        # ✅ 1. Playwright mouse click
+        # ✅ 1. Playwright locator بالنص (الأقوى)
+        if text:
+            for sel in [
+                f'button:has-text("{text}")',
+                f'a:has-text("{text}")',
+                f'[role="button"]:has-text("{text}")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0 and await el.is_visible():
+                        await el.scroll_into_view_if_needed()
+                        await human_delay(0.5, 1)
+                        try:
+                            await el.click(timeout=5000)
+                        except Exception:
+                            await el.click(force=True, timeout=5000)
+                        log.info(f"✅ ضغطنا بـ {sel}")
+                        await human_delay(5, 8)
+                        return True
+                except Exception:
+                    continue
+
+        # ✅ 2. Playwright mouse click
         try:
             if x > 0 and y > 0:
                 await page.mouse.move(x, y, steps=15)
@@ -319,36 +329,26 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"mouse: {e}")
 
-        # ✅ 2. Playwright locator بالنص
-        if text:
-            for sel in [
-                f'button:has-text("{text}")',
-                f'a:has-text("{text}")',
-                f'[role="button"]:has-text("{text}")',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        await el.click(timeout=3000)
-                        log.info(f"✅ ضغطنا بـ {sel}")
-                        await human_delay(5, 8)
-                        return True
-                except Exception:
-                    continue
-
-        # ✅ 3. JS click على الزر الأزرق
+        # ✅ 3. JS click — الأولوية لـ "understand"
         try:
             clicked = await page.evaluate("""
                 () => {
                     const all = document.querySelectorAll('button, a, input[type="submit"], [role="button"]');
                     for (const el of all) {
                         if (el.offsetParent === null || el.disabled) continue;
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        if (bg === 'rgb(26, 115, 232)' || bg === 'rgb(66, 133, 244)' ||
-                            bg === 'rgb(23, 78, 166)' || bg === 'rgb(21, 101, 192)' ||
-                            bg === 'rgb(13, 101, 45)' || bg === 'rgb(24, 90, 188)') {
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (t === 'i understand' || t.includes('understand')) {
                             el.click();
-                            return { text: (el.innerText || '').substring(0, 50) };
+                            return { text: t, method: 'understand' };
+                        }
+                    }
+                    for (const el of all) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        if (bg.includes('11, 87') || bg.includes('26, 115') ||
+                            bg.includes('66, 133') || bg.includes('23, 78')) {
+                            el.click();
+                            return { text: (el.innerText || '').substring(0, 50), bg };
                         }
                     }
                     return null;
