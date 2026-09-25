@@ -12,7 +12,8 @@ class CloudConsole:
         self.username = None
         self.password = None
 
-    async def login(self, username: str, password: str):
+        async def login(self, username: str, password: str,
+                    user_id: int = None, sender=None, context=None):
         self.username = username
         self.password = password
 
