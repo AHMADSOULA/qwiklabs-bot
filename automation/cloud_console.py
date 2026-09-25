@@ -12,7 +12,7 @@ class CloudConsole:
         self.username = None
         self.password = None
 
-        async def login(self, username: str, password: str,
+    async def login(self, username: str, password: str,
                     user_id: int = None, sender=None, context=None):
         self.username = username
         self.password = password
@@ -31,33 +31,35 @@ class CloudConsole:
                 await take_screenshot(page, f"cc_iter_{attempt}")
                 log.info(f"URL: {page.url}")
 
-                # Console ready?
+                # 1. Console ready?
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
                     break
 
-                # Sign in?
+                # 2. Sign in?
                 if await self._is_signin_page(page):
                     log.info(f"🔑 Sign in")
 
-                    # نحل CAPTCHA أولاً
+                    # نحل CAPTCHA أولاً (يدوياً)
                     try:
                         from automation.captcha_solver import detect_and_solve_captcha
-                        from config import config
                         await human_delay(1, 2)
-                        solved = await detect_and_solve_captcha(
+                        solution = await detect_and_solve_captcha(
                             page,
-                            config.CAPTCHA_USERID,
-                            config.CAPTCHA_APIKEY,
+                            user_id=user_id,
+                            sender=sender,
+                            context=context,
                         )
-                        if solved:
-                            log.info("✅ تم حل CAPTCHA")
+                        if solution:
+                            log.info(f"✅ CAPTCHA solved: {solution}")
+                            await self._fill_captcha(page, solution)
                             await human_delay(4, 6)
+                            await take_screenshot(page, f"cc_after_captcha_{attempt}")
                             continue
                     except Exception as e:
                         log.warning(f"فشل CAPTCHA: {e}")
 
-                    # نسجلو
+                    # نسجلو (email + password)
                     try:
                         await self._do_signin(page, self.username, self.password)
                         await human_delay(5, 7)
@@ -67,7 +69,7 @@ class CloudConsole:
 
                     continue
 
-                # Welcome?
+                # 3. Welcome?
                 if await self._is_welcome_page(page):
                     log.info("📋 Welcome — نضغط Accept")
                     clicked = await self._handle_welcome_page(page)
@@ -75,12 +77,12 @@ class CloudConsole:
                         await human_delay(4, 6)
                     continue
 
-                # كلمة سر غلط؟
+                # 4. كلمة سر غلط؟
                 if await self._has_wrong_password_error(page):
                     await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
                     raise RuntimeError("❌ كلمة السر غلط. جدد الرابط.")
 
-                # Verify?
+                # 5. Verify?
                 if await self._has_verify_required(page):
                     await take_screenshot(page, f"cc_verify_{attempt}")
                     raise RuntimeError("❌ Google كتطلب verify.")
@@ -96,6 +98,65 @@ class CloudConsole:
             log.error(f"فشل تسجيل الدخول: {e}")
             await take_screenshot(page, "cc_error")
             raise
+
+    # ==================== CAPTCHA Fill ====================
+
+    async def _fill_captcha(self, page, solution: str):
+        """يكتب الحل فـ حقل CAPTCHA"""
+        for sel in [
+            'input[name="ca"]',
+            'input[id="ca"]',
+            'input[name="captcha"]',
+            'input[type="text"][aria-label*="Type the text" i]',
+            'input[type="text"][aria-label*="characters" i]',
+            'input[type="text"]',
+        ]:
+            try:
+                inp = page.locator(sel).first
+                if await inp.count() == 0 or not await inp.is_visible():
+                    continue
+                # تأكد ماشي حقل الإيميل
+                name = (await inp.get_attribute("name") or "").lower()
+                id_attr = (await inp.get_attribute("id") or "").lower()
+                if "email" in name or "identifier" in id_attr:
+                    continue
+
+                log.info(f"✅ حقل CAPTCHA: {sel}")
+                await inp.click()
+                await human_delay(0.3, 0.6)
+                await inp.fill("")
+                await human_delay(0.2, 0.4)
+                await inp.fill(solution)
+                await human_delay(0.5, 1.0)
+
+                val = await inp.input_value()
+                if val.strip():
+                    log.info(f"✍️ كتبت: {val}")
+
+                    # Next
+                    for btn_sel in [
+                        '#captchaNext',
+                        'button:has-text("Next")',
+                        'input[type="submit"]',
+                        'button[type="submit"]',
+                        '#identifierNext',
+                    ]:
+                        try:
+                            btn = page.locator(btn_sel).first
+                            if await btn.count() > 0 and await btn.is_visible():
+                                log.info(f"كليك على {btn_sel}")
+                                await btn.click()
+                                await human_delay(3, 5)
+                                return True
+                        except Exception:
+                            continue
+                    return True
+            except Exception as e:
+                log.warning(f"فشل {sel}: {e}")
+                continue
+        return False
+
+    # ==================== Helpers ====================
 
     async def _get_body_text(self, page, max_len: int = 400):
         try:
@@ -157,6 +218,7 @@ class CloudConsole:
             'input[type="email"]',
             'input[type="text"][name="identifier"]',
             'input[name="identifier"]',
+            'input[type="password"]',
         ]:
             try:
                 if await page.locator(sel).count() > 0:
@@ -165,10 +227,12 @@ class CloudConsole:
                 pass
         return False
 
+    # ==================== Sign In ====================
+
     async def _do_signin(self, page, username: str, password: str):
         await take_screenshot(page, "cc_before_signin")
 
-        # Email
+        # ========== Email ==========
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -213,24 +277,25 @@ class CloudConsole:
         await human_delay(4, 6)
         await take_screenshot(page, "cc_after_email_next")
 
-        # CAPTCHA بعد email
+        # ========== CAPTCHA بعد email ==========
         try:
             from automation.captcha_solver import detect_and_solve_captcha
-            from config import config
             await human_delay(1, 2)
-            solved = await detect_and_solve_captcha(
+            solution = await detect_and_solve_captcha(
                 page,
-                config.CAPTCHA_USERID,
-                config.CAPTCHA_APIKEY,
+                user_id=self.username,  # نستعمل username كـ key
+                sender=None,
+                context=None,
             )
-            if solved:
-                log.info("✅ تم حل CAPTCHA")
+            if solution:
+                log.info(f"✅ CAPTCHA solved")
+                await self._fill_captcha(page, solution)
                 await human_delay(4, 6)
                 await take_screenshot(page, "cc_after_captcha")
         except Exception as e:
             log.warning(f"فشل CAPTCHA: {e}")
 
-        # Password
+        # ========== Password ==========
         await human_delay(2, 3)
         await take_screenshot(page, "cc_before_pwd")
 
@@ -297,6 +362,8 @@ class CloudConsole:
                     return
             except Exception:
                 continue
+
+    # ==================== Welcome ====================
 
     async def _handle_welcome_page(self, page, max_attempts: int = 2) -> bool:
         for attempt in range(max_attempts):
