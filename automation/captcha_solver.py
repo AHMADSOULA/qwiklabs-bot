@@ -10,7 +10,6 @@ PENDING_CAPTCHA = {}
 
 
 async def has_captcha(page) -> bool:
-    """يتحقق واش كاين CAPTCHA"""
     try:
         return await page.evaluate("""
             () => {
@@ -37,7 +36,6 @@ async def has_captcha(page) -> bool:
 
 
 async def detect_and_solve_captcha(page, user_id: int = None, sender=None, context=None) -> str:
-    """يحل CAPTCHA — يدوي أو TrueCaptcha API"""
     from config import config
 
     if not await has_captcha(page):
@@ -46,7 +44,6 @@ async def detect_and_solve_captcha(page, user_id: int = None, sender=None, conte
 
     log.info("🚨 CAPTCHA مطلوبة!")
 
-    # 📸 نصور
     captcha_img = None
     for sel in ['img[src*="captcha"]', 'img[alt*="captcha" i]', 'img[id*="captcha"]', 'img[src*="Captcha"]']:
         try:
@@ -58,13 +55,11 @@ async def detect_and_solve_captcha(page, user_id: int = None, sender=None, conte
             continue
 
     if not captcha_img:
-        log.warning("⚠️ ما لقيتش img")
         return None
 
     img_path = "/app/data/screenshots/captcha.png"
     await captcha_img.screenshot(path=img_path)
 
-    # ✅ الحل
     if config.CAPTCHA_MODE == "truecaptcha":
         solution = await _solve_truecaptcha(img_path, config.CAPTCHA_USERID, config.CAPTCHA_APIKEY)
     else:
@@ -73,7 +68,6 @@ async def detect_and_solve_captcha(page, user_id: int = None, sender=None, conte
     if not solution:
         return None
 
-    # ✍️ نكتب الحل
     for sel in ['input[name="ca"]', 'input[id="ca"]', 'input[name="captcha"]',
                 'input[type="text"][aria-label*="Type the text" i]']:
         try:
@@ -103,7 +97,6 @@ async def detect_and_solve_captcha(page, user_id: int = None, sender=None, conte
 
 
 async def _solve_truecaptcha(img_path: str, userid: str, apikey: str) -> str:
-    """حل عبر TrueCaptcha API"""
     if not userid or not apikey:
         return None
     try:
@@ -141,7 +134,6 @@ async def _solve_truecaptcha(img_path: str, userid: str, apikey: str) -> str:
 
 
 async def _solve_manual(user_id: int, sender, img_path: str) -> str:
-    """حل يدوي — يرسل الصورة للمستخدم"""
     if not sender or not user_id:
         return None
 
@@ -150,38 +142,4 @@ async def _solve_manual(user_id: int, sender, img_path: str) -> str:
     if not os.path.exists(img_path):
         return None
 
-    PENDING_CAPTCHA[user_id] = {"solution": None, "waiting": True}
-
-    with open(img_path, "rb") as f:
-        await sender.reply_photo(
-            photo=InputFile(f),
-            caption="🚨 *CAPTCHA*\n\n📝 اكتب الحل هنا\n⏱️ عندك 5 دقائق\n❌ /cancel",
-            parse_mode="Markdown",
-        )
-
-    for i in range(60):
-        await asyncio.sleep(5)
-        data = PENDING_CAPTCHA.get(user_id, {})
-        if data.get("solution"):
-            sol = data["solution"]
-            PENDING_CAPTCHA.pop(user_id, None)
-            return sol
-        if not data.get("waiting"):
-            PENDING_CAPTCHA.pop(user_id, None)
-            return None
-
-    PENDING_CAPTCHA.pop(user_id, None)
-    return None
-
-
-def set_captcha_solution(user_id: int, solution: str) -> bool:
-    if user_id in PENDING_CAPTCHA:
-        PENDING_CAPTCHA[user_id]["solution"] = solution.strip()
-        PENDING_CAPTCHA[user_id]["waiting"] = False
-        return True
-    return False
-
-
-def cancel_captcha(user_id: int):
-    if user_id in PENDING_CAPTCHA:
-        PENDING_CAPTCHA[user_id]["waiting"] = False
+    PENDING_CAPTCHA[user_id] = {"solution": None, "waiting
