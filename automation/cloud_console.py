@@ -28,7 +28,6 @@ class CloudConsole:
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
 
-        # ✅ Screenshot 1: فتح Console
         await self._shot(page, "1️⃣ فتح Cloud Console")
 
         try:
@@ -58,7 +57,6 @@ class CloudConsole:
                     except Exception as e:
                         log.warning(f"⚠️ sign in: {e}")
                         await self._shot(page, "❌ فشل Sign in")
-                        # ✅ نرسل التقرير
                         await self._send_report(page, f"فشل Sign in: {str(e)[:200]}")
                         raise
                     continue
@@ -74,7 +72,6 @@ class CloudConsole:
                         await self._shot(page, "✅ ضغطنا Accept")
                         await human_delay(10, 15)
                     else:
-                        # ❌ ما لقيناش زر
                         await self._shot(page, "❌ ما لقيناش زر")
                         await self._send_report(page, "❌ ما لقيناش زر Accept فـ Welcome")
                         await human_delay(5, 8)
@@ -122,7 +119,6 @@ class CloudConsole:
     async def _send_report(self, page, reason: str):
         """يرسل تقرير مفصّل عن المشكل"""
         try:
-            # ✅ نجمع كل المعلومات
             info = await page.evaluate("""
                 () => {
                     const url = window.location.href.substring(0, 300);
@@ -144,8 +140,6 @@ class CloudConsole:
                                 bg: bg,
                                 x: Math.round(rect.x + rect.width / 2),
                                 y: Math.round(rect.y + rect.height / 2),
-                                w: Math.round(rect.width),
-                                h: Math.round(rect.height),
                                 disabled: el.disabled || false,
                             });
                         }
@@ -175,7 +169,6 @@ class CloudConsole:
                 }
             """)
 
-            # ✅ نحفظ JSON
             try:
                 os.makedirs("/app/data/records", exist_ok=True)
                 path = f"/app/data/records/error_{int(time.time())}.json"
@@ -184,7 +177,6 @@ class CloudConsole:
             except Exception:
                 pass
 
-            # ✅ نبني الرسالة
             msg = f"🔴 *تقرير المشكل*\n\n"
             msg += f"📋 *السبب:* {reason}\n\n"
             msg += f"🔗 *URL:*\n`{info.get('url', '')[:200]}`\n\n"
@@ -200,7 +192,6 @@ class CloudConsole:
 
             msg += f"\n🖼️ *iframes:* {info.get('iframes', 0)}"
 
-            # ✅ نرسل (مقسّم)
             if self.sender:
                 try:
                     for i in range(0, len(msg), 3500):
@@ -217,14 +208,12 @@ class CloudConsole:
     # ==================== دوال الفحص ====================
 
     async def _is_signin_page(self, page) -> bool:
-        """✅ فحص قوي — نفحصو قبل Welcome"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
                 return True
             if "signin" in url and "workspaceterms" not in url:
                 return True
-            # ✅ إذا كاين input[email] → Sign in
             has_input = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
@@ -241,13 +230,11 @@ class CloudConsole:
             return False
 
     async def _is_welcome_page(self, page) -> bool:
-        """✅ نفحصو Welcome — ماشي Sign in"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
                 return False
 
-            # ✅ إذا كاين input[email] → Sign in ماشي Welcome
             has_email = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
@@ -260,11 +247,9 @@ class CloudConsole:
             if has_email:
                 return False
 
-            # ✅ من URL
             if "workspacetermsofservice" in url or "speedbump" in url:
                 return True
 
-            # ✅ من النص + زر
             info = await page.evaluate("""
                 () => {
                     const text = (document.body.innerText || '').toLowerCase();
@@ -322,10 +307,10 @@ class CloudConsole:
             pass
         return "project=" in url or "/home/" in url
 
-    # ==================== Click Blue Button ====================
+    # ==================== Click Blue Button (4 طرق) ====================
 
     async def _click_blue_button(self, page) -> str:
-        """يضغط على الزر الأزرق"""
+        """يضغط على الزر الأزرق — 4 طرق"""
         log.info("🔍 نبحث عن الزر الأزرق...")
 
         # ✅ نسجل الأزرار
@@ -357,45 +342,32 @@ class CloudConsole:
             buttons = []
 
         # ✅ نلقاو الزر
-        target = None
+        target_text = None
         for b in buttons:
             txt = (b.get("text") or "").lower()
-            if "i understand" in txt or "agree and continue" in txt or "accept" in txt or "continue" in txt:
-                target = b
+            if "i understand" in txt or "agree and continue" in txt or "accept" in txt:
+                target_text = b.get("text")
                 break
 
-        # ✅ أو زر أزرق
-        if not target:
+        if not target_text:
             for b in buttons:
                 bg = b.get("bg", "")
                 if "11, 87" in bg or "26, 115" in bg or "66, 133" in bg:
-                    target = b
+                    target_text = b.get("text")
                     break
 
-        if not target:
+        if not target_text:
             log.warning("⚠️ ما لقيناش زر")
             return None
 
-        x = target.get("x", 0)
-        y = target.get("y", 0)
-        text = target.get("text", "")
-        log.info(f"🎯 الزر: '{text}' فـ ({x}, {y})")
+        log.info(f"🎯 الزر: '{target_text}'")
 
-        # ✅ نضغطو
-        try:
-            if x > 0 and y > 0:
-                await page.mouse.move(x, y, steps=15)
-                await human_delay(0.5, 1)
-                await page.mouse.down()
-                await human_delay(0.1, 0.2)
-                await page.mouse.up()
-                log.info("✅ mouse.click")
-                return text
-        except Exception as e:
-            log.warning(f"mouse: {e}")
-
-        # ✅ Playwright
+        # ============================================
+        # ✅ الطريقة 1: Playwright locator
+        # ============================================
+        log.info("🖱️ الطريقة 1: Playwright")
         for sel in [
+            f'button:has-text("{target_text}")',
             'button:has-text("I understand")',
             'button:has-text("Agree and continue")',
             'button:has-text("Accept")',
@@ -403,23 +375,53 @@ class CloudConsole:
         ]:
             try:
                 el = page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click(force=True, timeout=5000)
-                    log.info(f"✅ {sel}")
-                    return sel
-            except Exception:
+                cnt = await el.count()
+                if cnt > 0 and await el.is_visible():
+                    await el.scroll_into_view_if_needed()
+                    await human_delay(0.3, 0.5)
+                    log.info(f"✅ لقينا: {sel}")
+                    await el.click(timeout=5000)
+                    log.info("✅ click نجح")
+                    return target_text
+            except Exception as e:
+                log.warning(f"فشل {sel}: {e}")
                 continue
 
-        # ✅ JS
+        # ============================================
+        # ✅ الطريقة 2: force click
+        # ============================================
+        log.info("🖱️ الطريقة 2: force click")
+        for sel in [
+            'button:has-text("I understand")',
+            'button:has-text("Agree and continue")',
+            'button:has-text("Accept")',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0:
+                    await el.click(force=True, timeout=5000)
+                    log.info(f"✅ force: {sel}")
+                    return target_text
+            except Exception as e:
+                log.warning(f"force فشل {sel}: {e}")
+                continue
+
+        # ============================================
+        # ✅ الطريقة 3: JS click
+        # ============================================
+        log.info("🖱️ الطريقة 3: JS")
         try:
             clicked = await page.evaluate("""
                 () => {
-                    const kws = ['i understand', 'agree and continue', 'accept', 'continue', 'agree'];
+                    const kws = ['i understand', 'agree and continue', 'accept', 'continue'];
                     for (const el of document.querySelectorAll('button, a, [role="button"]')) {
                         if (el.offsetParent === null || el.disabled) continue;
                         const t = (el.innerText || '').trim().toLowerCase();
+                        if (!t || t.length > 100) continue;
                         for (const kw of kws) {
                             if (t.includes(kw)) {
+                                el.scrollIntoView({block: 'center'});
+                                el.focus();
                                 el.click();
                                 return t;
                             }
@@ -431,8 +433,41 @@ class CloudConsole:
             if clicked:
                 log.info(f"✅ JS: {clicked}")
                 return clicked
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"JS: {e}")
+
+        # ============================================
+        # ✅ الطريقة 4: mouse.click
+        # ============================================
+        log.info("🖱️ الطريقة 4: mouse.click")
+        try:
+            coords = await page.evaluate("""
+                (target_text) => {
+                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').trim();
+                        if (t === target_text) {
+                            const rect = el.getBoundingClientRect();
+                            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+                        }
+                    }
+                    return null;
+                }
+            """, target_text)
+
+            if coords:
+                x = coords["x"]
+                y = coords["y"]
+                log.info(f"🎯 mouse @ ({x}, {y})")
+                await page.mouse.move(x, y, steps=10)
+                await human_delay(0.5, 1)
+                await page.mouse.down()
+                await human_delay(0.1, 0.2)
+                await page.mouse.up()
+                log.info("✅ mouse.click")
+                return target_text
+        except Exception as e:
+            log.warning(f"mouse: {e}")
 
         return None
 
