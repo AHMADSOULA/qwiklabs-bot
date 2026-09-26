@@ -22,5 +22,9 @@ class Config:
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
+    # ✅ CAPTCHA
+    CAPTCHA_USERID = os.getenv("CAPTCHA_USERID", "")
+    CAPTCHA_APIKEY = os.getenv("CAPTCHA_APIKEY", "")
+
 
 config = Config()
