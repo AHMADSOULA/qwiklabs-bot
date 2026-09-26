@@ -1,10 +1,3 @@
-"""
-AI Debugger — نظام تشخيص ذكي
-- يلقط كل خطوة
-- يحلل الصفحة (inputs, buttons, errors)
-- يكتشف المشاكل تلقائياً
-- يرسل تقرير كامل لـ Telegram
-"""
 import os
 import time
 import traceback
@@ -26,8 +19,6 @@ class DiagnosticReport:
         self.errors = []
         self.screenshots = []
         self.metadata = {}
-        self.analysis = None
-        self.diagnosis = None
 
     def add_step(self, name: str, status: str, details: str = ""):
         elapsed = round(time.time() - self.start_time, 2)
@@ -53,12 +44,6 @@ class DiagnosticReport:
         if path and os.path.exists(path):
             self.screenshots.append({"path": path, "caption": caption[:200]})
 
-    def add_analysis(self, analysis: dict):
-        self.analysis = analysis
-
-    def add_diagnosis(self, diagnosis: str):
-        self.diagnosis = diagnosis
-
     def set_metadata(self, key: str, value):
         self.metadata[key] = value
 
@@ -67,7 +52,6 @@ class DiagnosticReport:
         lines.append("═" * 50)
         lines.append("📊 تقرير التشخيص")
         lines.append("═" * 50)
-        lines.append("")
         lines.append(f"🆔 Job: #{self.job_id} | 👤 User: {self.user_id}")
         lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"⏱️ المدة: {round(time.time() - self.start_time, 2)}s")
@@ -87,23 +71,11 @@ class DiagnosticReport:
                     lines.append(f"      → {s['details']}")
             lines.append("")
 
-        if self.diagnosis:
-            lines.append("🧠 التشخيص الذكي:")
-            lines.append(f"  {self.diagnosis}")
-            lines.append("")
-
-        if self.analysis:
-            lines.append("🔍 تحليل الصفحة:")
-            for k, v in self.analysis.items():
-                lines.append(f"  • {k}: {v}")
-            lines.append("")
-
         if self.errors:
             lines.append("❌ الأخطاء:")
             for i, e in enumerate(self.errors, 1):
                 lines.append(f"  [{i}] {e['context']}")
-                lines.append(f"      Type: {e['type']}")
-                lines.append(f"      Msg: {e['message']}")
+                lines.append(f"      {e['type']}: {e['message']}")
             lines.append("")
 
         if self.screenshots:
@@ -116,11 +88,11 @@ class DiagnosticReport:
         return "\n".join(lines)
 
     def save(self) -> str:
-        report_text = self.build_report()
+        text = self.build_report()
         filepath = f"{DIAG_DIR}/job_{self.job_id}_{int(time.time())}.txt"
         try:
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(report_text)
+                f.write(text)
         except Exception:
             pass
         return filepath
@@ -139,136 +111,17 @@ def get_report(job_id: int) -> DiagnosticReport:
     return PENDING_REPORTS.get(job_id)
 
 
-def end_report(job_id: int) -> str:
-    report = PENDING_REPORTS.pop(job_id, None)
-    if not report:
-        return "ما كاينش تقرير"
-    report.save()
-    return report.build_report()
-
-
-# ==================== AI Analysis ====================
-
-async def analyze_page(page) -> dict:
-    """يحلل الصفحة — inputs, buttons, text, errors"""
-    try:
-        return await page.evaluate("""
-            () => {
-                const r = {
-                    url: window.location.href.substring(0, 200),
-                    title: document.title || '',
-                    bodyText: (document.body.innerText || '').substring(0, 300).replace(/\\n/g, ' | '),
-                    inputs: [],
-                    buttons: [],
-                    hasCaptcha: false,
-                    hasPassword: false,
-                    hasEmail: false,
-                    hasAccept: false,
-                    hasWelcome: false,
-                    hasVerify: false,
-                    hasError: false,
-                    errorText: '',
-                };
-                for (const inp of document.querySelectorAll('input')) {
-                    if (inp.offsetParent === null) continue;
-                    r.inputs.push({
-                        type: inp.type || '',
-                        name: inp.name || '',
-                        id: inp.id || '',
-                        placeholder: inp.placeholder || '',
-                        value: (inp.value || '').substring(0, 30),
-                    });
-                    if (inp.type === 'password') r.hasPassword = true;
-                    if (inp.type === 'email' || inp.name === 'identifier') r.hasEmail = true;
-                }
-                for (const btn of document.querySelectorAll('button, a[role="button"]')) {
-                    if (btn.offsetParent === null) continue;
-                    const t = (btn.innerText || btn.value || '').trim();
-                    if (t.length > 0 && t.length < 80) {
-                        r.buttons.push(t.substring(0, 50));
-                        const tl = t.toLowerCase();
-                        if (tl.includes('accept') || tl.includes('understand') || tl.includes('agree')) r.hasAccept = true;
-                    }
-                }
-                for (const img of document.querySelectorAll('img')) {
-                    const s = (img.src || '').toLowerCase();
-                    if (s.includes('captcha')) r.hasCaptcha = true;
-                }
-                const bt = (document.body.innerText || '').toLowerCase();
-                if (bt.includes('welcome to your new account')) r.hasWelcome = true;
-                if (bt.includes('verify it') || bt.includes('2-step') || bt.includes('enter the code')) r.hasVerify = true;
-                if (bt.includes('incorrect password') || bt.includes('wrong password')) {
-                    r.hasError = true;
-                    r.errorText = 'كلمة السر غلط';
-                }
-                if (bt.includes('couldn\\'t sign you in') || bt.includes('browser or app may not be secure')) {
-                    r.hasError = true;
-                    r.errorText = 'Google حظرت المتصفح';
-                }
-                return r;
-            }
-        """)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def diagnose(analysis: dict, error: str = "") -> str:
-    """تشخيص ذكي — يقترح الحل"""
-    if not analysis:
-        return "ما قدرتش نحلل الصفحة"
-
-    url = analysis.get("url", "").lower()
-    error_lower = (error or "").lower()
-
-    # ✅ تشخيصات
-    if "couldn't sign you in" in analysis.get("bodyText", "").lower() or \
-       "browser or app may not be secure" in analysis.get("bodyText", "").lower():
-        return "🔴 Google حظرت المتصفح — الحل: VPS + Proxy residential"
-
-    if analysis.get("hasError"):
-        return f"🔴 {analysis.get('errorText', 'خطأ')}"
-
-    if analysis.get("hasVerify"):
-        return "🔴 Google كتطلب verify (2FA) — الحل: تسجيل يدوي"
-
-    if analysis.get("hasCaptcha"):
-        return "🟡 CAPTCHA موجودة — البوت كيحلها (manual/truecaptcha)"
-
-    if "workspacetermsofservice" in url or "speedbump" in url:
-        if analysis.get("hasAccept"):
-            return "🟡 صفحة TOS/Speedbump — نضغط Accept"
-        return "🔴 صفحة TOS/Speedbump — ما لقيتش زر Accept"
-
-    if analysis.get("hasWelcome") and analysis.get("hasAccept"):
-        return "🟢 صفحة Welcome — نضغط Accept"
-
-    if analysis.get("hasPassword"):
-        return "🟢 حقل password موجود — نكمل"
-
-    if analysis.get("hasEmail"):
-        return "🟢 حقل email موجود — نكتب email"
-
-    if "accounts.google.com" in url:
-        return "🟡 فـ Sign in — مازال"
-
-    if "console.cloud.google.com" in url and "signin" not in url:
-        return "🟢 وصلنا للـ Console"
-
-    return f"🟡 حالة غير معروفة: {url[:100]}"
-
-
 async def send_diagnostic(sender, job_id: int, error_msg: str = ""):
-    """يرسل التقرير للمستخدم"""
     report = get_report(job_id)
     if not report:
         await sender.reply_text(f"❌ خطأ:\n\n{error_msg[:3000]}")
         return
 
-    report_text = report.build_report()
+    text = report.build_report()
     max_len = 3500
 
-    if len(report_text) > max_len:
-        parts = [report_text[i:i+max_len] for i in range(0, len(report_text), max_len)]
+    if len(text) > max_len:
+        parts = [text[i:i+max_len] for i in range(0, len(text), max_len)]
         for i, part in enumerate(parts):
             try:
                 await sender.reply_text(f"📊 ({i+1}/{len(parts)}):\n\n```\n{part}\n```", parse_mode="Markdown")
@@ -276,9 +129,9 @@ async def send_diagnostic(sender, job_id: int, error_msg: str = ""):
                 await sender.reply_text(f"📊 ({i+1}/{len(parts)}):\n\n{part[:3000]}")
     else:
         try:
-            await sender.reply_text(f"📊 التقرير:\n\n```\n{report_text}\n```", parse_mode="Markdown")
+            await sender.reply_text(f"📊 التقرير:\n\n```\n{text}\n```", parse_mode="Markdown")
         except Exception:
-            await sender.reply_text(f"📊 التقرير:\n\n{report_text[:3000]}")
+            await sender.reply_text(f"📊 التقرير:\n\n{text[:3000]}")
 
     for shot in report.screenshots[-5:]:
         try:
