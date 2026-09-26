@@ -25,46 +25,83 @@ class QwikLabsSession:
 
         try:
             url = page.url.lower()
+            url_orig = page.url
             content = (await page.content()).lower()
             try:
                 text = (await page.inner_text("body")).lower()
             except Exception:
                 text = ""
 
-            # ✅ 1. منتهي؟
-            expired_kw = [
-                "this lab is expired", "lab expired", "lab has expired",
-                "session expired", "session has ended", "no longer available",
-                "not available", "expired", "ended", "منتهي", "انتهت"
-            ]
-            for kw in expired_kw:
-                if kw in content or kw in text:
-                    return False, "⏰ الرابط منتهي الصلاحية"
-
-            # ✅ 2. 404
-            if "404" in text or "not found" in text:
-                return False, "❌ الصفحة غير موجودة"
-
-            # ✅ 3. AddSession — نقبلها (مؤقت)
+            # ============================================
+            # ✅ 1. AddSession — نقبلها أولاً (قبل أي فحص)
+            # ============================================
             if "accounts.google.com" in url and "addsession" in url:
-                m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
+                m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', url_orig)
                 if m:
                     email = m.group(1)
                     log.info(f"⚠️ AddSession مقبول — {email}")
                     return True, f"✅ SSO مقبول — {email}"
-                return False, "⚠️ AddSession بلا Email"
+                log.info("⚠️ AddSession بلا Email — نقبلها مع ذلك")
+                return True, "✅ AddSession مقبول"
 
-            # ✅ 4. Google Sign in بلا Email
+            # ============================================
+            # ✅ 2. Sign in مباشر (بلا Email)
+            # ============================================
             if "accounts.google.com" in url and "signin" in url:
-                if "email=" not in url:
-                    return False, "⚠️ Sign in بلا Email"
+                if "email=" in url_orig.lower():
+                    m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', url_orig)
+                    if m:
+                        return True, f"✅ Sign in مع Email — {m.group(1)}"
+                log.info("⚠️ Sign in بلا Email — نقبلها")
+                return True, "✅ Sign in مقبول"
 
-            # ✅ 5. SSO صحيح
-            m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
+            # ============================================
+            # ✅ 3. فحص "منتهي" — بحذر
+            # ============================================
+            expired_kw = [
+                "this lab is expired",
+                "lab is expired",
+                "lab has expired",
+                "lab expired",
+                "session has expired",
+                "session expired",
+                "this session has expired",
+                "no longer available",
+                "lab is no longer available",
+                "الرابط منتهي",
+                "انتهت الصلاحية",
+            ]
+            for kw in expired_kw:
+                # ✅ نتحققو من نص الصفحة (ماشي URL)
+                if kw in text or kw in content:
+                    log.warning(f"⏰ كلمة منتهي: '{kw}'")
+                    return False, "⏰ الرابط منتهي الصلاحية"
+
+            # ============================================
+            # ✅ 4. 404
+            # ============================================
+            if "404" in text and "not found" in text:
+                return False, "❌ الصفحة غير موجودة"
+
+            # ============================================
+            # ✅ 5. SSO صحيح (skills.google/google_sso)
+            # ============================================
+            if "skills.google" in url and "google_sso" in url:
+                m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', url_orig)
+                if m:
+                    return True, f"✅ SSO صالح — {m.group(1)}"
+                return True, "✅ SSO صالح"
+
+            # ============================================
+            # ✅ 6. Email فـ URL
+            # ============================================
+            m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', url_orig)
             if m:
                 return True, f"✅ SSO صالح — {m.group(1)}"
 
-            # ✅ 6. content فيه email
+            # ============================================
+            # ✅ 7. Email فـ content
+            # ============================================
             if "@qwiklabs.net" in content:
                 return True, "✅ SSO صالح — Lab page"
 
