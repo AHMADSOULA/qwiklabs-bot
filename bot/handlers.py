@@ -23,7 +23,7 @@ job_lock = asyncio.Lock()
 # ⚙️ إعدادات
 IMAGE = "docker.io/ajndjd2/ahmed-vip1"
 SERVICE = "ahmed-vip1"
-REGION = "us-central1"
+REGION = "europe-west1"
 MEMORY = "2Gi"
 CPU = "2"
 PORT = 8080
@@ -89,6 +89,139 @@ async def send_photo(msg, path, caption=""):
         log.warning(f"فشل صورة: {e}")
 
 
+# ==================== Error Analyzer ====================
+
+async def analyze_error(page, error: Exception = None, context_step: str = "") -> str:
+    """
+    يحلل المشكل ويرجع تقرير مفصّل.
+    """
+    log.info("🔍 نحلل المشكل...")
+
+    report_parts = []
+    report_parts.append("🔴 *تحليل المشكل*")
+    report_parts.append("")
+    report_parts.append(f"📍 *الخطوة:* {context_step}")
+    report_parts.append("")
+
+    if error:
+        report_parts.append(f"❌ *الخطأ:* `{type(error).__name__}`")
+        report_parts.append(f"📝 *الرسالة:* {str(error)[:300]}")
+        report_parts.append("")
+
+    # ✅ نحلل الصفحة
+    if page:
+        try:
+            page_info = await page.evaluate("""
+                () => {
+                    const url = window.location.href;
+                    const body = document.body || {};
+                    const text = (body.innerText || '').trim();
+
+                    // Inputs
+                    const inputs = [];
+                    for (const inp of document.querySelectorAll('input')) {
+                        if (inp.offsetParent === null) continue;
+                        inputs.push({
+                            type: inp.type || '',
+                            name: inp.name || '',
+                            id: inp.id || '',
+                            aria: inp.getAttribute('aria-label') || '',
+                            placeholder: inp.placeholder || '',
+                            value: (inp.value || '').substring(0, 30),
+                        });
+                    }
+
+                    // Buttons
+                    const buttons = [];
+                    for (const btn of document.querySelectorAll('button, a[role="button"], input[type="submit"]')) {
+                        if (btn.offsetParent === null) continue;
+                        const t = (btn.innerText || btn.value || '').trim();
+                        const bg = window.getComputedStyle(btn).backgroundColor;
+                        if (t && t.length < 60) buttons.push({text: t, bg: bg});
+                    }
+
+                    // Captcha
+                    const has_captcha = Array.from(document.querySelectorAll('img')).some(i => {
+                        const s = (i.src || '').toLowerCase();
+                        return s.includes('captcha') && i.offsetParent !== null;
+                    });
+
+                    return {
+                        url: url.substring(0, 300),
+                        title: document.title || '',
+                        text_length: text.length,
+                        text_snippet: text.substring(0, 300).replace(/\\n+/g, ' | '),
+                        inputs: inputs,
+                        buttons: buttons,
+                        has_captcha: has_captcha,
+                        has_password: inputs.some(i => i.type === 'password'),
+                        has_email: inputs.some(i => i.type === 'email' || i.name === 'identifier'),
+                    };
+                }
+            """)
+
+            report_parts.append("🔗 *URL:*")
+            report_parts.append(f"`{page_info.get('url', 'N/A')}`")
+            report_parts.append("")
+            report_parts.append(f"📄 *العنوان:* `{page_info.get('title', '')[:80]}`")
+            report_parts.append(f"📝 *طول النص:* {page_info.get('text_length', 0)} حرف")
+            report_parts.append("")
+            report_parts.append("📄 *نص الصفحة:*")
+            report_parts.append(f"```\n{page_info.get('text_snippet', '')[:250]}\n```")
+            report_parts.append("")
+            report_parts.append("🔘 *الحقول:*")
+            for inp in page_info.get("inputs", [])[:10]:
+                report_parts.append(f"  • type=`{inp.get('type')}` name=`{inp.get('name')}` aria=`{inp.get('aria', '')[:30]}`")
+            report_parts.append("")
+            report_parts.append("🔲 *الأزرار:*")
+            for btn in page_info.get("buttons", [])[:10]:
+                report_parts.append(f"  • `{btn.get('text', '')[:50]}` — bg=`{btn.get('bg', '')}`")
+            report_parts.append("")
+            report_parts.append(f"🚨 *CAPTCHA:* {'✅' if page_info.get('has_captcha') else '❌'}")
+            report_parts.append(f"🔑 *Email:* {'✅' if page_info.get('has_email') else '❌'}")
+            report_parts.append(f"🔒 *Password:* {'✅' if page_info.get('has_password') else '❌'}")
+
+            # ✅ نرسلو فـ Telegram (مقسّم)
+            text = "\n".join(report_parts)
+            for i in range(0, len(text), 3500):
+                try:
+                    await page.context.bot_data if False else None
+                except Exception:
+                    pass
+
+        except Exception as e:
+            report_parts.append(f"⚠️ فشل تحليل الصفحة: {str(e)[:200]}")
+
+    return "\n".join(report_parts)
+
+
+async def send_error_report(msg, page, error: Exception = None, step: str = ""):
+    """يرسل تقرير المشكل + Screenshots"""
+    try:
+        report = await analyze_error(page, error, step)
+
+        # ✅ نرسلو التقرير
+        text = report[:4000]
+        try:
+            await msg.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
+        except Exception:
+            await msg.reply_text(text)
+
+        # ✅ Screenshots
+        if page:
+            try:
+                shot = await take_screenshot(page, "error")
+                if shot:
+                    await send_photo(msg, shot, f"❌ خطأ فـ: {step}")
+            except Exception:
+                pass
+
+    except Exception as e:
+        log.error(f"فشل إرسال التقرير: {e}")
+
+
+# ==================== SSO Handling ====================
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     urls = extract_urls(text)
@@ -97,7 +230,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     sso_url = urls[0]
     user = update.effective_user
-    if "skills.google" not in sso_url and "qwiklabs" not in sso_url:
+    if "skills.google" not in sso_url and "qwiklabs" not in sso_url and "AddSession" not in sso_url:
         await update.message.reply_text("⚠️ الرابط ماشي من Google Skills.")
         return
 
@@ -121,10 +254,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_step1(job_id, sso_url, msg, user.id, context))
 
 
+# ==================== Step 1: SSO ====================
+
 async def run_step1(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
         report = get_report(job_id)
+        page = None
         try:
             # ✅ 1. إطلاق المتصفح
             await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...", parse_mode=ParseMode.MARKDOWN)
@@ -140,6 +276,7 @@ async def run_step1(job_id, sso_url, msg, user_id, context):
             shot = await take_screenshot(page, "sso")
             if shot:
                 report.add_screenshot(shot, "بعد SSO")
+                await send_photo(msg, shot, "📸 بعد فتح SSO")
 
             # ✅ 3. التحقق من SSO
             is_valid, reason = await ql.check_sso_valid(page)
@@ -147,6 +284,7 @@ async def run_step1(job_id, sso_url, msg, user_id, context):
 
             if not is_valid:
                 await msg.edit_text(f"❌ *#{job_id}* — فشل\n\n📋 {reason}", parse_mode=ParseMode.MARKDOWN)
+                await send_error_report(msg, page, None, "التحقق من SSO")
                 await db.update_job(job_id, "failed", reason)
                 await db.clear_session(user_id)
                 await browser.close()
@@ -155,7 +293,12 @@ async def run_step1(job_id, sso_url, msg, user_id, context):
             # ✅ 4. استخراج credentials
             await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 استخراج البيانات...", parse_mode=ParseMode.MARKDOWN)
             email, password = await ql.extract_credentials(page)
-            report.add_step("استخراج credentials", "✅", f"email: {email}, pass: {'✅' if password else '❌'}")
+            report.add_step("استخراج credentials", "✅", f"email: {email}")
+
+            shot = await take_screenshot(page, "credentials")
+            if shot:
+                report.add_screenshot(shot, f"credentials: {email}")
+                await send_photo(msg, shot, f"📸\n👤 `{email}`")
 
             context.bot_data[f"page_{user_id}"] = page
             context.bot_data[f"browser_{user_id}"] = browser
@@ -177,19 +320,21 @@ async def run_step1(job_id, sso_url, msg, user_id, context):
                     f"✅ *#{job_id}*\n\n👤 `{email}`\n\n🔑 *أرسل كلمة السر:*",
                     parse_mode=ParseMode.MARKDOWN,
                 )
+
         except Exception as e:
             log.exception("SSO فشل")
-            if report:
-                report.add_error(e, "SSO")
+            report.add_error(e, "SSO")
             await db.update_job(job_id, "failed", str(e))
             await db.clear_session(user_id)
             await msg.edit_text(f"❌ *#{job_id}* — فشل\n\n📋 {str(e)[:300]}", parse_mode=ParseMode.MARKDOWN)
-            await send_diagnostic(msg, job_id, str(e))
+            await send_error_report(msg, page, e, "SSO")
             try:
                 await browser.close()
             except Exception:
                 pass
 
+
+# ==================== Password ====================
 
 async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -220,19 +365,19 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_step2(job_id, email, text, msg, user.id, context))
 
 
+# ==================== Step 2: Login + Deploy ====================
+
 async def run_step2(job_id, username, password, msg, user_id, context):
     async with job_lock:
         report = get_report(job_id)
+        page = None
         try:
             page = context.bot_data.get(f"page_{user_id}")
             if not page:
                 raise RuntimeError("الجلسة انتهت")
 
             # ✅ 1. تسجيل الدخول
-            await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...", parse_mode=ParseMode.MARKDOWN)
             report.add_step("تسجيل الدخول", "ℹ️", "بدء")
 
             cc = CloudConsole(page.context)
@@ -240,77 +385,70 @@ async def run_step2(job_id, username, password, msg, user_id, context):
 
             report.add_step("تسجيل الدخول", "✅", f"URL: {console_page.url[:150]}")
 
-            # ✅ 2. ننتظر Console يتحمل
-            log.info("⏳ ننتظر Console يتحمل...")
-            await msg.edit_text(
-                f"✅ *#{job_id}*\n\n"
-                f"🔑 تم تسجيل الدخول\n"
-                f"⏳ ننتظر Console يتحمل...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            # ✅ 2. نستخرجو project_id من SSO
+            session = await db.get_session(user_id)
+            sso_url = session.get("sso_url", "") if session else ""
 
-            loaded = await self_wait_for_console(console_page, timeout=60)
+            project_id = None
+            if sso_url:
+                m = re.search(r'project%3D([a-z0-9\-]+)', sso_url)
+                if not m:
+                    m = re.search(r'project=([a-z0-9\-]+)', sso_url)
+                if not m:
+                    m = re.search(r'(qwiklabs-gcp-[a-z0-9\-]+)', sso_url)
+                if m:
+                    project_id = m.group(1)
 
-            if not loaded:
-                shot = await take_screenshot(console_page, "console_not_loaded")
-                if shot:
-                    await send_photo(msg, shot, f"❌ Console ما تحملش\nURL: `{console_page.url[:200]}`")
-                raise RuntimeError(
-                    f"❌ Console ما تحملش بعد 60 ثانية\n"
-                    f"URL: {console_page.url[:200]}"
+            if not project_id:
+                m = re.search(r'project=([a-z0-9\-]+)', console_page.url)
+                if m:
+                    project_id = m.group(1)
+
+            log.info(f"📦 project_id = {project_id}")
+
+            # ✅ 3. نروحو لـ Dashboard
+            if project_id:
+                dashboard_url = f"https://console.cloud.google.com/home/dashboard?project={project_id}"
+                log.info(f"🌐 فتح Dashboard: {dashboard_url}")
+                await msg.edit_text(
+                    f"✅ *#{job_id}*\n\n"
+                    f"🔑 تم تسجيل الدخول\n"
+                    f"📦 `{project_id}`\n"
+                    f"⏳ نفتح Dashboard...",
+                    parse_mode=ParseMode.MARKDOWN,
                 )
+                try:
+                    await console_page.goto(dashboard_url, wait_until="domcontentloaded", timeout=60000)
+                except Exception as e:
+                    log.warning(f"Dashboard goto: {e}")
+                await asyncio.sleep(8)
 
-            # ✅ 3. نأكدو أنه دخل
+                loaded = await self_wait_for_console(console_page, timeout=60)
+                if not loaded:
+                    log.warning("⚠️ Dashboard ما تحملش كامل")
+
+            # ✅ 4. Screenshot
             current_url = console_page.url
-            log.info(f"✅ Console تحمل — URL: {current_url}")
+            log.info(f"✅ URL النهائي: {current_url}")
 
-            # ✅ 4. نتحققو من المحتوى
-            page_info = {}
-            try:
-                page_info = await console_page.evaluate("""
-                    () => {
-                        const body = document.body || {};
-                        const text = (body.innerText || '').trim();
-                        return {
-                            text_length: text.length,
-                            title: document.title || '',
-                            body_text: text.substring(0, 200),
-                        };
-                    }
-                """)
-                log.info(f"📋 صفحة: {page_info}")
-
-                if page_info.get("text_length", 0) < 100:
-                    shot = await take_screenshot(console_page, "console_blank")
-                    if shot:
-                        await send_photo(
-                            msg, shot,
-                            f"⚠️ الصفحة بيضاء\n"
-                            f"نص: {page_info.get('text_length', 0)} حرف\n"
-                            f"URL: `{current_url[:150]}`"
-                        )
-                    raise RuntimeError(f"الصفحة بيضاء — نص: {page_info.get('text_length')} حرف")
-            except Exception as e:
-                log.warning(f"فشل فحص الصفحة: {e}")
-
-            # ✅ 5. Screenshot نهائي
-            shot = await take_screenshot(console_page, "console_loaded")
+            shot = await take_screenshot(console_page, "console_dashboard")
             if shot:
-                report.add_screenshot(shot, "Console تحمل")
+                report.add_screenshot(shot, "Console Dashboard")
                 await send_photo(
                     msg, shot,
-                    f"✅ *دخل Google Cloud بنجاح!*\n\n"
-                    f"🔗 `{current_url[:150]}`\n"
-                    f"📄 `{page_info.get('title', '')[:80]}`"
+                    f"✅ *دخل Google Cloud!*\n\n"
+                    f"🔗 `{current_url[:180]}`\n"
+                    f"📦 `{project_id or 'N/A'}`"
                 )
 
+            # ✅ 5. نأكدو
             await msg.edit_text(
                 f"✅ *#{job_id}* — دخل Google Cloud بنجاح! 🎉\n\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"🔗 *URL:*\n`{current_url[:200]}`\n\n"
+                f"📦 *Project:*\n`{project_id or 'N/A'}`\n\n"
                 f"👤 `{username}`\n"
                 f"━━━━━━━━━━━━━━━━\n"
-                f"✅ *Console تحمل*\n"
                 f"📸 تحقق من الصورة",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -330,7 +468,7 @@ async def run_step2(job_id, username, password, msg, user_id, context):
                 f"❌ *#{job_id}* — فشل\n\n📋 {str(e)[:300]}",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await send_diagnostic(msg, job_id, str(e))
+            await send_error_report(msg, page, e, "تسجيل دخول")
         finally:
             try:
                 pg = context.bot_data.pop(f"page_{user_id}", None)
@@ -350,46 +488,44 @@ async def run_step2(job_id, username, password, msg, user_id, context):
 # ==================== Wait for Console ====================
 
 async def self_wait_for_console(page, timeout: int = 60) -> bool:
-    """
-    ينتظر حتى Console يتحمل.
-    """
-    log.info(f"⏳ ننتظر Console يتحمل (max {timeout}s)...")
+    """ينتظر Console يتحمل"""
+    log.info(f"⏳ ننتظر Console (max {timeout}s)...")
 
     for i in range(timeout // 3):
         await asyncio.sleep(3)
-
         try:
             info = await page.evaluate("""
                 () => {
                     const url = window.location.href;
-                    const body = document.body || {};
-                    const text = (body.innerText || '').trim();
-                    const has_content = text.length > 200;
+                    const text = (document.body.innerText || '').trim();
+                    const lower = text.toLowerCase();
                     const is_console = url.includes('console.cloud.google.com') &&
                                        !url.includes('signin') &&
                                        !url.includes('accounts.google.com');
-                    const is_blank = text.length < 100;
-                    return {
-                        url: url.substring(0, 200),
-                        text_length: text.length,
-                        is_console: is_console,
-                        is_blank: is_blank,
-                        has_content: has_content,
-                        title: document.title || '',
-                    };
+                    const has_content = text.length > 300;
+                    const has_project = /qwiklabs-gcp-[a-z0-9\\-]+/i.test(text);
+                    const has_dashboard = lower.includes('dashboard');
+                    const has_cloud_run = lower.includes('cloud run');
+                    const has_url_not_found = lower.includes('url not found') ||
+                                              lower.includes("couldn't find what you were looking");
+                    const elements = document.querySelectorAll('*').length;
+                    return { url, text_length: text.length, is_console, has_content,
+                             has_project, has_dashboard, has_cloud_run,
+                             has_url_not_found, elements };
                 }
             """)
+            log.info(f"⏳ {i+1}: text={info.get('text_length')}, project={info.get('has_project')}, dashboard={info.get('has_dashboard')}, notfound={info.get('has_url_not_found')}, el={info.get('elements')}")
 
-            log.info(f"⏳ محاولة {i+1}: URL={info.get('url', '')[:80]}, نص={info.get('text_length')}، console={info.get('is_console')}")
+            if info.get("has_url_not_found"):
+                return False
 
-            if info.get("is_console") and info.get("has_content"):
-                log.info("✅ Console تحمل!")
-                return True
-
+            if (info.get("is_console") and info.get("has_content") and
+                info.get("elements", 0) > 200 and not info.get("has_url_not_found")):
+                if info.get("has_project") or info.get("has_dashboard") or info.get("has_cloud_run"):
+                    return True
         except Exception as e:
-            log.warning(f"فشل فحص: {e}")
+            log.warning(f"فشل: {e}")
 
-    log.warning("⚠️ Console ما تحملش")
     return False
 
 
@@ -405,21 +541,6 @@ async def get_project_id(page, sso_url: str = "") -> str:
             m = re.search(r'(qwiklabs-gcp-[a-z0-9\-]+)', sso_url)
         if m:
             return m.group(1)
-    try:
-        pid = await page.evaluate("""
-            async () => {
-                try {
-                    const r = await fetch('https://cloudresourcemanager.googleapis.com/v1/projects', {credentials: 'include'});
-                    const d = await r.json();
-                    if (d.projects && d.projects.length > 0) return d.projects[0].projectId;
-                } catch(e) {}
-                return null;
-            }
-        """)
-        if pid:
-            return pid
-    except Exception:
-        pass
     return None
 
 
