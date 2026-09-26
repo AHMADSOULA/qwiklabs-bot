@@ -8,25 +8,33 @@ log = get_logger("CaptchaSolver")
 
 
 async def has_captcha(page) -> bool:
-    """يتحقق واش كاين CAPTCHA فـ الصفحة"""
+    """يتحقق واش كاين CAPTCHA"""
     try:
         return await page.evaluate("""
             () => {
+                // ✅ 1. من img
                 for (const img of document.querySelectorAll('img')) {
                     if (img.offsetParent === null) continue;
                     const s = (img.src || '').toLowerCase();
                     const a = (img.alt || '').toLowerCase();
                     const i = (img.id || '').toLowerCase();
-                    if (s.includes('captcha') || a.includes('captcha') || i.includes('captcha')) return true;
+                    const c = (img.className || '').toString().toLowerCase();
+                    if (s.includes('captcha') || a.includes('captcha') ||
+                        i.includes('captcha') || c.includes('captcha')) return true;
                 }
+                // ✅ 2. من input
                 for (const inp of document.querySelectorAll('input')) {
                     if (inp.offsetParent === null) continue;
                     const n = (inp.name || '').toLowerCase();
                     const i = (inp.id || '').toLowerCase();
                     const al = (inp.getAttribute('aria-label') || '').toLowerCase();
                     if (n === 'ca' || i === 'ca' || n === 'captcha' || i === 'captcha' ||
-                        al.includes('type the text')) return true;
+                        al.includes('type the text') || al.includes('characters')) return true;
                 }
+                // ✅ 3. من نص الصفحة
+                const body = (document.body.innerText || '').toLowerCase();
+                if (body.includes('type the text you hear or see') ||
+                    body.includes('enter the characters')) return true;
                 return false;
             }
         """)
@@ -35,10 +43,7 @@ async def has_captcha(page) -> bool:
 
 
 async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> str:
-    """
-    يحل CAPTCHA عبر TrueCaptcha API.
-    """
-    # ✅ إذا ما مرسلناش credentials، نجيبوهم من config
+    """يحل CAPTCHA عبر TrueCaptcha API"""
     if not userid or not apikey:
         try:
             from config import config
@@ -53,29 +58,65 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
 
     log.info("🚨 CAPTCHA مطلوبة!")
 
-    # ✅ نصور الصورة
+    # ============================================
+    # ✅ نلقاو صورة CAPTCHA — selectors موسعة
+    # ============================================
     captcha_img = None
-    for sel in [
+    selectors = [
         'img[src*="captcha"]',
         'img[alt*="captcha" i]',
         'img[id*="captcha"]',
+        'img[class*="captcha"]',
         'img[src*="Captcha"]',
-    ]:
+        'img[src*="CAPTCHA"]',
+        'img[jsname*="captcha"]',
+        'div[role="img"] img',
+        'div[jsname] img',
+        'canvas',
+    ]
+
+    for sel in selectors:
         try:
-            el = page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                captcha_img = el
+            els = await page.locator(sel).all()
+            for el in els:
+                if await el.is_visible():
+                    box = await el.bounding_box()
+                    if box and box["width"] > 50 and box["height"] > 20:
+                        captcha_img = el
+                        log.info(f"✅ لقيت CAPTCHA: {sel} ({box['width']}x{box['height']})")
+                        break
+            if captcha_img:
                 break
         except Exception:
             continue
 
+    # ✅ fallback: أول صورة كبيرة فـ الصفحة
     if not captcha_img:
-        log.warning("⚠️ ما لقيتش img")
+        log.warning("⚠️ selectors ما خدموش — نجرب أول صورة كبيرة")
+        try:
+            imgs = await page.locator('img').all()
+            for img in imgs:
+                if await img.is_visible():
+                    box = await img.bounding_box()
+                    if box and box["width"] > 100 and box["height"] > 40:
+                        captcha_img = img
+                        log.info(f"✅ fallback img ({box['width']}x{box['height']})")
+                        break
+        except Exception as e:
+            log.warning(f"fallback: {e}")
+
+    if not captcha_img:
+        log.error("❌ ما لقيتش img")
         return None
 
+    # ✅ نصور
     img_path = "/app/data/screenshots/captcha.png"
-    await captcha_img.screenshot(path=img_path)
-    log.info(f"📸 حفظت: {img_path}")
+    try:
+        await captcha_img.screenshot(path=img_path)
+        log.info(f"📸 حفظت: {img_path}")
+    except Exception as e:
+        log.error(f"فشل screenshot: {e}")
+        return None
 
     # ✅ نحلها عبر TrueCaptcha
     solution = await _solve_truecaptcha(img_path, userid, apikey)
@@ -86,7 +127,9 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
 
     log.info(f"✅ الحل: {solution}")
 
-    # ✅ نكتب الحل
+    # ==========================================
+    # ✅ نكتب الحل — selectors موسعة
+    # ==========================================
     for sel in [
         'input[name="ca"]',
         'input[id="ca"]',
@@ -94,6 +137,10 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
         'input[id="captcha"]',
         'input[type="text"][aria-label*="Type the text" i]',
         'input[type="text"][aria-label*="characters" i]',
+        'input[type="text"][aria-labelledby*="captcha" i]',
+        'input#ca',
+        'input#captcha',
+        'input[name="ca"][type="text"]',
     ]:
         try:
             inp = page.locator(sel).first
@@ -114,15 +161,16 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
                 # ✅ نضغط Next
                 for btn_sel in [
                     '#captchaNext',
-                    'button:has-text("Next")',
-                    'input[type="submit"]',
-                    'button[type="submit"]',
                     '#identifierNext',
+                    'button:has-text("Next")',
+                    'button[type="submit"]',
+                    'input[type="submit"]',
                 ]:
                     try:
                         btn = page.locator(btn_sel).first
                         if await btn.count() > 0 and await btn.is_visible():
                             await btn.click()
+                            log.info(f"✅ كليك Next: {btn_sel}")
                             await asyncio.sleep(4)
                             return solution
                     except Exception:
@@ -131,6 +179,23 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
         except Exception as e:
             log.warning(f"فشل {sel}: {e}")
             continue
+
+    # ✅ fallback: أي input text فارغ
+    log.warning("⚠️ selectors ما خدموش — نجرب أي input text")
+    try:
+        for inp in await page.locator('input[type="text"]').all():
+            if not await inp.is_visible():
+                continue
+            val = await inp.input_value()
+            if val.strip():
+                continue
+            await inp.click()
+            await inp.fill(solution)
+            log.info(f"✅ كتبت فـ input fallback")
+            await asyncio.sleep(3)
+            return solution
+    except Exception as e:
+        log.warning(f"fallback: {e}")
 
     return None
 
@@ -191,7 +256,7 @@ async def _solve_truecaptcha(img_path: str, userid: str, apikey: str) -> str:
         return None
 
 
-# ✅ متغيرات للتوافق (ما كتستعملش دابا)
+# ✅ متغيرات للتوافق
 def set_captcha_solution(user_id: int, solution: str) -> bool:
     return False
 
