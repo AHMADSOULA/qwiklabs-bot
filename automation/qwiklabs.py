@@ -1,3 +1,4 @@
+import re
 from utils.logger import get_logger
 from utils.helpers import human_delay, human_move
 
@@ -16,57 +17,101 @@ class QwikLabsSession:
         return page
 
     async def extract_credentials(self, page):
+        """
+        يستخرج email + password (إذا موجود).
+        ✅ ما يفشلش إذا ما لقاش password — يرجع None.
+        """
         log.info("استخراج credentials...")
         username = None
         password = None
 
-        selectors_username = [
-            '[data-test-id="student-username"]',
-            '.student-username',
-            '#student-username',
-        ]
-        selectors_password = [
-            '[data-test-id="student-password"]',
-            '.student-password',
-            '#student-password',
-        ]
+        # ============================================
+        # ✅ 1. Email من URL
+        # ============================================
+        m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
+        if m:
+            username = m.group(1)
+            log.info(f"✅ email من URL: {username}")
 
-        try:
-            show_btn = page.locator('button:has-text("Show"), button:has-text("Open")').first
-            if await show_btn.count() > 0:
-                await human_move(page)
-                await show_btn.click()
-                await human_delay(1, 2)
-        except Exception:
-            pass
+        # ============================================
+        # ✅ 2. Email من selectors
+        # ============================================
+        if not username:
+            for sel in [
+                '[data-test-id="student-username"]',
+                '.student-username',
+                '#student-username',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        username = (await el.inner_text()).strip()
+                        break
+                except Exception:
+                    continue
 
-        for sel in selectors_username:
+        # ============================================
+        # ✅ 3. Email من HTML
+        # ============================================
+        if not username:
             try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    username = (await el.inner_text()).strip()
-                    break
+                content = await page.content()
+                m = re.search(r'([\w\.\-]+@qwiklabs\.net)', content)
+                if m:
+                    username = m.group(1)
             except Exception:
-                continue
+                pass
 
-        for sel in selectors_password:
+        # ============================================
+        # ✅ 4. Password من URL
+        # ============================================
+        m = re.search(r'Password=([^&\s#]+)', page.url)
+        if m:
+            password = m.group(1)
+            log.info(f"✅ password من URL")
+
+        # ============================================
+        # ✅ 5. Password من selectors
+        # ============================================
+        if not password:
+            for sel in [
+                '[data-test-id="student-password"]',
+                '.student-password',
+                '#student-password',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        password = (await el.inner_text()).strip()
+                        break
+                except Exception:
+                    continue
+
+        # ============================================
+        # ✅ 6. Password من HTML
+        # ============================================
+        if not password:
             try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    password = (await el.inner_text()).strip()
-                    break
+                content = await page.content()
+                m = re.search(r'"password"\s*:\s*"([^"]+)"', content)
+                if m:
+                    password = m.group(1)
             except Exception:
-                continue
+                pass
 
-        if not username or not password:
-            content = await page.content()
-            import re
-            m_user = re.search(r'([\w\.\-]+@qwiklabs\.net)', content)
-            if m_user and not username:
-                username = m_user.group(1)
+        # ============================================
+        # ✅ 7. إذا ما لقيناش email → فشل
+        # ============================================
+        if not username:
+            raise RuntimeError("فشل استخراج email")
 
-        if not username or not password:
-            raise RuntimeError("فشل استخراج credentials")
+        # ============================================
+        # ✅ 8. إذا ما لقيناش password → نرجعو None
+        #    (البوت غادي يطلبو من المستخدم)
+        # ============================================
+        if not password:
+            log.info("⚠️ ما لقيناش password — البوت غادي يطلبو")
+        else:
+            log.info(f"✅ email: {username}, password: ✅")
 
-        log.info(f"تم استخراج credentials: {username}")
         return username, password
