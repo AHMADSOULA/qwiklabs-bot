@@ -4,6 +4,12 @@ from config import config
 from automation.stealth import STEALTH_JS
 from utils.logger import get_logger
 
+try:
+    from playwright_stealth import stealth_async
+    HAS_STEALTH = True
+except ImportError:
+    HAS_STEALTH = False
+
 log = get_logger("Browser")
 
 
@@ -14,7 +20,6 @@ class StealthBrowser:
 
     async def start(self):
         self.playwright = await async_playwright().start()
-
         os.makedirs(config.CHROME_PROFILE_DIR, exist_ok=True)
 
         args = [
@@ -78,6 +83,17 @@ class StealthBrowser:
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
         await self.context.add_init_script(STEALTH_JS)
+
+        if HAS_STEALTH:
+            async def apply(page):
+                try:
+                    await stealth_async(page)
+                except Exception:
+                    pass
+            self.context.on("page", apply)
+            for p in self.context.pages:
+                await apply(p)
+
         self.context.set_default_timeout(config.PAGE_TIMEOUT)
         self.context.set_default_navigation_timeout(config.NAV_TIMEOUT)
 
