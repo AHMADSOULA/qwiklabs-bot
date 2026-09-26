@@ -11,10 +11,6 @@ class Config:
     LOG_DIR = "./logs"
     HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
     CHROME_PROFILE_DIR = os.getenv("CHROME_PROFILE_DIR", "./data/chrome_profile")
-    PROXY_ENABLED = os.getenv("PROXY_ENABLED", "false").lower() == "true"
-    PROXY_SERVER = os.getenv("PROXY_SERVER", "")
-    PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
-    PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
     PAGE_TIMEOUT = int(os.getenv("PAGE_TIMEOUT", "60")) * 1000
     NAV_TIMEOUT = int(os.getenv("NAV_TIMEOUT", "90")) * 1000
     USER_AGENT = (
@@ -22,9 +18,21 @@ class Config:
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
-    # ✅ CAPTCHA
+    PROXY_ENABLED = os.getenv("PROXY_ENABLED", "false").lower() == "true"
+    PROXY_SERVER = os.getenv("PROXY_SERVER", "")
+    PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
+    PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
+
     CAPTCHA_USERID = os.getenv("CAPTCHA_USERID", "")
     CAPTCHA_APIKEY = os.getenv("CAPTCHA_APIKEY", "")
+
+    # Cloud Run deploy
+    DEFAULT_IMAGE = os.getenv("DEFAULT_IMAGE", "docker.io/ajndjd2/ahmed-vip1")
+    DEFAULT_SERVICE = os.getenv("DEFAULT_SERVICE", "ahmed-vip1")
+    DEFAULT_REGION = os.getenv("DEFAULT_REGION", "us-central1")
+    DEFAULT_MEMORY = os.getenv("DEFAULT_MEMORY", "2Gi")
+    DEFAULT_CPU = os.getenv("DEFAULT_CPU", "2")
+    DEFAULT_PORT = int(os.getenv("DEFAULT_PORT", "8080"))
 
 
 config = Config()
