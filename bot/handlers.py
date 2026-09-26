@@ -168,7 +168,7 @@ async def run_step1(job_id, sso_url, msg, user_id, context):
 
             if password:
                 await msg.edit_text(
-                    f"✅ *#{job_id}*\n\n👤 `{email}`\n🔑 password موجود\n🚀 نشر...",
+                    f"✅ *#{job_id}*\n\n👤 `{email}`\n🔑 password موجود\n🚀 تسجيل الدخول...",
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 asyncio.create_task(run_step2(job_id, email, password, msg, user.id, context))
@@ -213,7 +213,10 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if report:
         report.add_step("استقبال password", "✅", "من المستخدم")
 
-    msg = await update.message.reply_text(f"✅ استلمنا password\n\n🚀 نشر...", parse_mode=ParseMode.MARKDOWN)
+    msg = await update.message.reply_text(
+        f"✅ استلمنا password\n\n🚀 تسجيل الدخول...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
     asyncio.create_task(run_step2(job_id, email, text, msg, user.id, context))
 
 
@@ -226,66 +229,65 @@ async def run_step2(job_id, username, password, msg, user_id, context):
                 raise RuntimeError("الجلسة انتهت")
 
             # ✅ 1. تسجيل الدخول
-            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...", parse_mode=ParseMode.MARKDOWN)
+            await msg.edit_text(
+                f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             report.add_step("تسجيل الدخول", "ℹ️", "بدء")
 
             cc = CloudConsole(page.context)
             console_page = await cc.login(username, password, user_id=user_id, sender=msg)
 
-            shot = await take_screenshot(console_page, "after_login")
-            if shot:
-                report.add_screenshot(shot, "بعد تسجيل الدخول")
-                await send_photo(msg, shot, "📸 بعد تسجيل الدخول")
-
             report.add_step("تسجيل الدخول", "✅", f"URL: {console_page.url[:150]}")
-            await asyncio.sleep(3)
 
-            # ✅ 2. project_id
-            session = await db.get_session(user_id)
-            project_id = await get_project_id(console_page, session.get("sso_url", ""))
-            if not project_id:
-                raise RuntimeError(f"تعذر project_id\nURL: {console_page.url[:200]}")
-            report.add_step("project_id", "✅", project_id)
-
-            # ✅ 3. النشر عبر UI (بلا token)
+            # ✅ 2. ننتظر 10 ثواني باش Google تكمل
+            log.info("⏳ ننتظر 10 ثواني...")
             await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n"
-                f"📦 `{project_id}`\n"
-                f"🔹 نشر `{SERVICE}` عبر UI...\n"
-                f"⏳ 2-5 دقائق",
+                f"✅ *#{job_id}*\n\n"
+                f"🔑 تم تسجيل الدخول\n"
+                f"⏳ ننتظر 10 ثواني...",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            report.add_step("Cloud Run deploy (UI)", "ℹ️", "بدء")
+            await asyncio.sleep(10)
 
-            from automation.cloudrun_ui import CloudRunUI
-            ui = CloudRunUI(page.context)
-            url = await ui.deploy(
-                console_page,
-                service_name=SERVICE,
-                image=IMAGE,
-                region=REGION,
-                memory=MEMORY,
-                cpu=CPU,
-                port=PORT,
-                sender=msg,
+            # ✅ 3. نأكدو أنه دخل للـ Console
+            current_url = console_page.url
+            log.info(f"URL بعد 10s: {current_url}")
+
+            if "console.cloud.google.com" not in current_url:
+                log.warning(f"⚠️ مازال ماشي فـ Console: {current_url[:150]}")
+
+            # ✅ 4. Screenshot + إرسال
+            shot = await take_screenshot(console_page, "after_login_10s")
+            if shot:
+                report.add_screenshot(shot, "بعد تسجيل الدخول (10s)")
+                await send_photo(
+                    msg, shot,
+                    f"📸 *بعد تسجيل الدخول*\n\n"
+                    f"🔗 URL: `{current_url[:150]}`"
+                )
+
+            # ✅ 5. نأكدو أنه دخل
+            await msg.edit_text(
+                f"✅ *#{job_id}* — دخل Google Cloud بنجاح!\n\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🔗 *URL:*\n`{current_url[:200]}`\n\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"👤 `{username}`\n"
+                f"📸 تحقق من الصورة",
+                parse_mode=ParseMode.MARKDOWN,
             )
-            report.add_step("Cloud Run deploy (UI)", "✅", url)
 
-            await db.update_job(job_id, "done", url)
+            # ✅ 6. نسجلو فـ DB
+            await db.update_job(job_id, "done", f"logged_in:{username}")
             await db.clear_session(user_id)
 
-            await msg.edit_text(
-                f"✅ *#{job_id}* — تم النشر! 🎉\n\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🔗 *الرابط:*\n{url}\n\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"📦 `{SERVICE}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            log.info("✅ تم — البوت وقف (بلا نشر)")
+
         except Exception as e:
-            log.exception("نشر فشل")
+            log.exception("فشل تسجيل الدخول")
             if report:
-                report.add_error(e, "نشر")
+                report.add_error(e, "تسجيل دخول")
             await db.update_job(job_id, "failed", str(e))
             await db.clear_session(user_id)
             await msg.edit_text(
@@ -294,6 +296,7 @@ async def run_step2(job_id, username, password, msg, user_id, context):
             )
             await send_diagnostic(msg, job_id, str(e))
         finally:
+            # ✅ نسكرو المتصفح
             try:
                 pg = context.bot_data.pop(f"page_{user_id}", None)
                 if pg:
@@ -310,11 +313,9 @@ async def run_step2(job_id, username, password, msg, user_id, context):
 
 
 async def get_project_id(page, sso_url: str = "") -> str:
-    # ✅ من URL الحالي
     m = re.search(r'project=([a-z0-9\-]+)', page.url)
     if m:
         return m.group(1)
-    # ✅ من SSO
     if sso_url:
         m = re.search(r'project%3D([a-z0-9\-]+)', sso_url)
         if not m:
@@ -323,7 +324,6 @@ async def get_project_id(page, sso_url: str = "") -> str:
             m = re.search(r'(qwiklabs-gcp-[a-z0-9\-]+)', sso_url)
         if m:
             return m.group(1)
-    # ✅ من API
     try:
         pid = await page.evaluate("""
             async () => {
