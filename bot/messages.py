@@ -3,7 +3,7 @@ WELCOME = """
 
 📌 *طريقة الاستعمال:*
 1. افتح Google Skills واختر Lab
-2. انسخ رابط SSO (skills.google/google_sso)
+2. انسخ رابط SSO
 3. أرسل الرابط هنا
 4. البوت سيدخل تلقائياً
 
