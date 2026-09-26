@@ -17,9 +17,9 @@ async def take_screenshot(page, name: str) -> str:
     safe_name = "".join(c for c in name if c.isalnum() or c in "-_")[:40]
     filepath = f"{SCREENSHOT_DIR}/{timestamp}_{safe_name}.png"
     try:
-        await page.screenshot(path=filepath, full_page=False)
+        await page.screenshot(path=filepath, full_page=False, timeout=10000)
         log.info(f"📸 {filepath}")
         return filepath
     except Exception as e:
-        log.error(f"فشل screenshot: {e}")
+        log.warning(f"فشل screenshot: {e}")
         return None
