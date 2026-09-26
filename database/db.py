@@ -41,68 +41,45 @@ async def init_db():
 
 async def add_job(user_id: int, sso_url: str) -> int:
     async with aiosqlite.connect(config.DB_PATH) as db:
-        cur = await db.execute(
-            "INSERT INTO jobs (user_id, sso_url) VALUES (?, ?)", (user_id, sso_url)
-        )
+        cur = await db.execute("INSERT INTO jobs (user_id, sso_url) VALUES (?, ?)", (user_id, sso_url))
         await db.commit()
         return cur.lastrowid
 
 
 async def update_job(job_id: int, status: str, result: str = None):
     async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute(
-            "UPDATE jobs SET status=?, result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (status, result, job_id)
-        )
+        await db.execute("UPDATE jobs SET status=?, result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, result, job_id))
         await db.commit()
 
 
 async def get_user_jobs(user_id: int, limit: int = 10):
     async with aiosqlite.connect(config.DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT id, status, created_at FROM jobs WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (user_id, limit)
-        )
+        cur = await db.execute("SELECT id, status, created_at FROM jobs WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))
         return await cur.fetchall()
 
 
 async def register_user(user_id: int, username: str):
     async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
-            (user_id, username)
-        )
+        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
         await db.commit()
 
 
-async def set_session(user_id: int, job_id: int = None, sso_url: str = None,
-                      username: str = None, password: str = None, state: str = None):
+async def set_session(user_id: int, job_id: int = None, sso_url: str = None, username: str = None, password: str = None, state: str = None):
     async with aiosqlite.connect(config.DB_PATH) as db:
         cur = await db.execute("SELECT user_id FROM sessions WHERE user_id=?", (user_id,))
         exists = await cur.fetchone()
-
         if exists:
             updates = []
             params = []
-            for field, val in [("job_id", job_id), ("sso_url", sso_url),
-                               ("username", username), ("password", password),
-                               ("state", state)]:
+            for field, val in [("job_id", job_id), ("sso_url", sso_url), ("username", username), ("password", password), ("state", state)]:
                 if val is not None:
                     updates.append(f"{field}=?")
                     params.append(val)
             if updates:
                 params.append(user_id)
-                await db.execute(
-                    f"UPDATE sessions SET {', '.join(updates)}, updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
-                    params
-                )
+                await db.execute(f"UPDATE sessions SET {', '.join(updates)}, updated_at=CURRENT_TIMESTAMP WHERE user_id=?", params)
         else:
-            await db.execute(
-                """INSERT INTO sessions 
-                   (user_id, job_id, sso_url, username, password, state)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, job_id, sso_url, username, password, state)
-            )
+            await db.execute("INSERT INTO sessions (user_id, job_id, sso_url, username, password, state) VALUES (?, ?, ?, ?, ?, ?)", (user_id, job_id, sso_url, username, password, state))
         await db.commit()
 
 
