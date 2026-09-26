@@ -20,61 +20,63 @@ class QwikLabsSession:
         return page
 
     async def check_sso_valid(self, page) -> tuple:
-        """
-        يتحقق من صلاحية SSO.
-        يرجع (is_valid: bool, reason: str)
-        """
-        log.info("🔍 نتحقق من صلاحية SSO...")
+        """يتحقق من صلاحية SSO — يقبل AddSession أيضاً"""
+        log.info("🔍 نتحقق من SSO...")
 
         try:
             url = page.url.lower()
             content = (await page.content()).lower()
-            text = (await page.inner_text("body")).lower()
+            try:
+                text = (await page.inner_text("body")).lower()
+            except Exception:
+                text = ""
 
-            # ✅ 1. صفحة منتهية
-            expired_keywords = [
-                "this lab is expired",
-                "lab has expired",
-                "lab expired",
-                "session has expired",
-                "session expired",
-                "this session has ended",
-                "lab is no longer available",
-                "cannot access",
-                "الرابط منتهي",
+            # ✅ 1. منتهي؟
+            expired_kw = [
+                "this lab is expired", "lab expired", "lab has expired",
+                "session expired", "session has ended", "no longer available",
+                "not available", "expired", "ended", "منتهي", "انتهت"
             ]
-            for kw in expired_keywords:
+            for kw in expired_kw:
                 if kw in content or kw in text:
                     return False, "⏰ الرابط منتهي الصلاحية"
 
-            # ✅ 2. صفحة Sign in (ماشي SSO صحيح)
-            if "accounts.google.com" in url and "addsession" in url:
-                return False, "⚠️ الرابط ماشي SSO — هو Sign in مباشر"
+            # ✅ 2. 404
+            if "404" in text or "not found" in text:
+                return False, "❌ الصفحة غير موجودة"
 
-            # ✅ 3. صفحة SSO صحيحة
-            if "skills.google" in url or "qwiklabs" in url:
-                # ✅ نتحقق واش فيه email
+            # ✅ 3. AddSession — نقبلها (مؤقت)
+            if "accounts.google.com" in url and "addsession" in url:
                 m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
                 if m:
-                    log.info(f"✅ SSO صالح — email: {m.group(1)}")
-                    return True, f"✅ SSO صالح ({m.group(1)})"
+                    email = m.group(1)
+                    log.info(f"⚠️ AddSession مقبول — {email}")
+                    return True, f"✅ SSO مقبول — {email}"
+                return False, "⚠️ AddSession بلا Email"
 
-            # ✅ 4. صفحة فاضية / خطأ
-            if "not found" in text or "404" in text:
-                return False, "❌ الصفحة ماشي موجودة (404)"
+            # ✅ 4. Google Sign in بلا Email
+            if "accounts.google.com" in url and "signin" in url:
+                if "email=" not in url:
+                    return False, "⚠️ Sign in بلا Email"
 
-            # ✅ 5. إذا وصلنا لـ Lab (فيها credentials)
+            # ✅ 5. SSO صحيح
+            m = re.search(r'Email=([^&\s#]+@qwiklabs\.net)', page.url)
+            if m:
+                return True, f"✅ SSO صالح — {m.group(1)}"
+
+            # ✅ 6. content فيه email
             if "@qwiklabs.net" in content:
                 return True, "✅ SSO صالح — Lab page"
 
+            log.info("✅ SSO مقبول (بلا تحقق قوي)")
             return True, "✅ SSO مقبول"
 
         except Exception as e:
             log.warning(f"فشل التحقق: {e}")
-            return True, f"⚠️ ما قدرناش نتحقق: {e}"
+            return True, f"⚠️ ما قدرناش نتحقق: {str(e)[:100]}"
 
     async def extract_credentials(self, page):
-        """يستخرج email + password (إذا موجود)"""
+        """يستخرج email + password"""
         log.info("استخراج credentials...")
 
         email = None
@@ -85,17 +87,6 @@ class QwikLabsSession:
         if m:
             email = m.group(1)
             log.info(f"✅ email من URL: {email}")
-
-        # email من selectors
-        if not email:
-            for sel in ['[data-test-id="student-username"]', '.student-username', '#student-username']:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        email = (await el.inner_text()).strip()
-                        break
-                except Exception:
-                    continue
 
         # email من HTML
         if not email:
@@ -111,17 +102,6 @@ class QwikLabsSession:
         m = re.search(r'Password=([^&\s#]+)', page.url)
         if m:
             password = m.group(1)
-
-        # password من selectors
-        if not password:
-            for sel in ['[data-test-id="student-password"]', '.student-password', '#student-password']:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        password = (await el.inner_text()).strip()
-                        break
-                except Exception:
-                    continue
 
         # password من HTML
         if not password:
