@@ -240,45 +240,81 @@ async def run_step2(job_id, username, password, msg, user_id, context):
 
             report.add_step("تسجيل الدخول", "✅", f"URL: {console_page.url[:150]}")
 
-            # ✅ 2. ننتظر 10 ثواني باش Google تكمل
-            log.info("⏳ ننتظر 10 ثواني...")
+            # ✅ 2. ننتظر Console يتحمل
+            log.info("⏳ ننتظر Console يتحمل...")
             await msg.edit_text(
                 f"✅ *#{job_id}*\n\n"
                 f"🔑 تم تسجيل الدخول\n"
-                f"⏳ ننتظر 10 ثواني...",
+                f"⏳ ننتظر Console يتحمل...",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            await asyncio.sleep(10)
 
-            # ✅ 3. نأكدو أنه دخل للـ Console
-            current_url = console_page.url
-            log.info(f"URL بعد 10s: {current_url}")
+            loaded = await self_wait_for_console(console_page, timeout=60)
 
-            if "console.cloud.google.com" not in current_url:
-                log.warning(f"⚠️ مازال ماشي فـ Console: {current_url[:150]}")
-
-            # ✅ 4. Screenshot + إرسال
-            shot = await take_screenshot(console_page, "after_login_10s")
-            if shot:
-                report.add_screenshot(shot, "بعد تسجيل الدخول (10s)")
-                await send_photo(
-                    msg, shot,
-                    f"📸 *بعد تسجيل الدخول*\n\n"
-                    f"🔗 URL: `{current_url[:150]}`"
+            if not loaded:
+                shot = await take_screenshot(console_page, "console_not_loaded")
+                if shot:
+                    await send_photo(msg, shot, f"❌ Console ما تحملش\nURL: `{console_page.url[:200]}`")
+                raise RuntimeError(
+                    f"❌ Console ما تحملش بعد 60 ثانية\n"
+                    f"URL: {console_page.url[:200]}"
                 )
 
-            # ✅ 5. نأكدو أنه دخل
+            # ✅ 3. نأكدو أنه دخل
+            current_url = console_page.url
+            log.info(f"✅ Console تحمل — URL: {current_url}")
+
+            # ✅ 4. نتحققو من المحتوى
+            page_info = {}
+            try:
+                page_info = await console_page.evaluate("""
+                    () => {
+                        const body = document.body || {};
+                        const text = (body.innerText || '').trim();
+                        return {
+                            text_length: text.length,
+                            title: document.title || '',
+                            body_text: text.substring(0, 200),
+                        };
+                    }
+                """)
+                log.info(f"📋 صفحة: {page_info}")
+
+                if page_info.get("text_length", 0) < 100:
+                    shot = await take_screenshot(console_page, "console_blank")
+                    if shot:
+                        await send_photo(
+                            msg, shot,
+                            f"⚠️ الصفحة بيضاء\n"
+                            f"نص: {page_info.get('text_length', 0)} حرف\n"
+                            f"URL: `{current_url[:150]}`"
+                        )
+                    raise RuntimeError(f"الصفحة بيضاء — نص: {page_info.get('text_length')} حرف")
+            except Exception as e:
+                log.warning(f"فشل فحص الصفحة: {e}")
+
+            # ✅ 5. Screenshot نهائي
+            shot = await take_screenshot(console_page, "console_loaded")
+            if shot:
+                report.add_screenshot(shot, "Console تحمل")
+                await send_photo(
+                    msg, shot,
+                    f"✅ *دخل Google Cloud بنجاح!*\n\n"
+                    f"🔗 `{current_url[:150]}`\n"
+                    f"📄 `{page_info.get('title', '')[:80]}`"
+                )
+
             await msg.edit_text(
-                f"✅ *#{job_id}* — دخل Google Cloud بنجاح!\n\n"
+                f"✅ *#{job_id}* — دخل Google Cloud بنجاح! 🎉\n\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"🔗 *URL:*\n`{current_url[:200]}`\n\n"
-                f"━━━━━━━━━━━━━━━━\n"
                 f"👤 `{username}`\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"✅ *Console تحمل*\n"
                 f"📸 تحقق من الصورة",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            # ✅ 6. نسجلو فـ DB
             await db.update_job(job_id, "done", f"logged_in:{username}")
             await db.clear_session(user_id)
 
@@ -296,7 +332,6 @@ async def run_step2(job_id, username, password, msg, user_id, context):
             )
             await send_diagnostic(msg, job_id, str(e))
         finally:
-            # ✅ نسكرو المتصفح
             try:
                 pg = context.bot_data.pop(f"page_{user_id}", None)
                 if pg:
@@ -310,6 +345,52 @@ async def run_step2(job_id, username, password, msg, user_id, context):
                     await b.close()
                 except Exception:
                     pass
+
+
+# ==================== Wait for Console ====================
+
+async def self_wait_for_console(page, timeout: int = 60) -> bool:
+    """
+    ينتظر حتى Console يتحمل.
+    """
+    log.info(f"⏳ ننتظر Console يتحمل (max {timeout}s)...")
+
+    for i in range(timeout // 3):
+        await asyncio.sleep(3)
+
+        try:
+            info = await page.evaluate("""
+                () => {
+                    const url = window.location.href;
+                    const body = document.body || {};
+                    const text = (body.innerText || '').trim();
+                    const has_content = text.length > 200;
+                    const is_console = url.includes('console.cloud.google.com') &&
+                                       !url.includes('signin') &&
+                                       !url.includes('accounts.google.com');
+                    const is_blank = text.length < 100;
+                    return {
+                        url: url.substring(0, 200),
+                        text_length: text.length,
+                        is_console: is_console,
+                        is_blank: is_blank,
+                        has_content: has_content,
+                        title: document.title || '',
+                    };
+                }
+            """)
+
+            log.info(f"⏳ محاولة {i+1}: URL={info.get('url', '')[:80]}, نص={info.get('text_length')}، console={info.get('is_console')}")
+
+            if info.get("is_console") and info.get("has_content"):
+                log.info("✅ Console تحمل!")
+                return True
+
+        except Exception as e:
+            log.warning(f"فشل فحص: {e}")
+
+    log.warning("⚠️ Console ما تحملش")
+    return False
 
 
 async def get_project_id(page, sso_url: str = "") -> str:
