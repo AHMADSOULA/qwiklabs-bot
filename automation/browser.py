@@ -26,8 +26,15 @@ class StealthBrowser:
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-infobars",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-accelerated-2d-canvas",
+            "--single-process",
+            "--no-zygote",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows",
             "--window-size=1920,1080",
-            "--start-maximized",
             f"--user-agent={config.USER_AGENT}",
         ]
 
