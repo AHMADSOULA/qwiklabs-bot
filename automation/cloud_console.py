@@ -268,9 +268,8 @@ class CloudConsole:
         await human_delay(3, 5)
 
         # ============================================
-        # 🆕 🔍 CAPTCHA — فحص متعدد (5 محاولات)
+        # 🔍 CAPTCHA — فحص متعدد (5 محاولات)
         # ============================================
-        captcha_solved = False
         for captcha_attempt in range(5):
             log.info(f"🔍 فحص CAPTCHA (محاولة {captcha_attempt + 1}/5)...")
             await human_delay(3, 5)
@@ -290,7 +289,6 @@ class CloudConsole:
                     )
                     if solved:
                         log.info(f"✅ تم حل CAPTCHA: {solved}")
-                        captcha_solved = True
                         await human_delay(4, 6)
                         await self._send_shot(page, "✅ بعد CAPTCHA")
                         break
@@ -306,7 +304,7 @@ class CloudConsole:
                 await human_delay(2, 3)
 
         # ============================================
-        # 🆕 ⏳ ننتظر حقل password (max 20s)
+        # ⏳ ننتظر حقل password (max 20s)
         # ============================================
         log.info("⏳ ننتظر حقل password...")
         for wait_attempt in range(10):
@@ -421,93 +419,186 @@ class CloudConsole:
                 continue
 
     # ==========================================
-    # ✅ Welcome / TOS — checkbox + Agree
+    # ✅ Welcome / TOS — checkbox + Agree button
     # ==========================================
 
     async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
+        """
+        يتعامل مع Dialog Terms of Service:
+        1. يضغط على checkbox
+        2. يضغط على زر "Agree and continue" (الأزرق) بالإحداثيات
+        """
         for attempt in range(max_attempts):
+            log.info(f"🔍 Welcome/TOS محاولة {attempt + 1}")
             await human_delay(3, 5)
 
-            # ✅ 1. نضغط على checkbox
+            # ✅ 1. نسجل الـ checkbox + الأزرار
+            info = None
             try:
-                clicked_cb = await page.evaluate("""
+                info = await page.evaluate("""
                     () => {
-                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                        for (const cb of checkboxes) {
+                        const r = { checkboxes: [], buttons: [] };
+                        for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
                             if (cb.offsetParent === null) continue;
-                            if (cb.checked) return { already: true };
-                            cb.scrollIntoView({block: 'center'});
-                            cb.focus();
-                            const label = cb.closest('label');
-                            if (label) label.click();
-                            else cb.click();
-                            cb.dispatchEvent(new Event('change', { bubbles: true }));
-                            cb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                            return { checked: cb.checked };
+                            const rect = cb.getBoundingClientRect();
+                            r.checkboxes.push({
+                                name: cb.name || '',
+                                id: cb.id || '',
+                                checked: cb.checked,
+                                x: rect.x + rect.width / 2,
+                                y: rect.y + rect.height / 2,
+                                w: rect.width,
+                                h: rect.height,
+                            });
                         }
-                        return null;
-                    }
-                """)
-                if clicked_cb:
-                    log.info(f"✅ checkbox: {clicked_cb}")
-                    await human_delay(1, 2)
-            except Exception as e:
-                log.warning(f"checkbox: {e}")
-
-            # ✅ 2. نضغط الزر
-            try:
-                clicked = await page.evaluate("""
-                    () => {
-                        const all = document.querySelectorAll(
-                            'button, a, [role="button"], input[type="submit"]'
-                        );
-                        const keywords = [
-                            'agree and continue', 'i agree', 'i understand',
-                            'understand', 'accept', 'agree', 'continue', 'got it'
-                        ];
-                        for (const el of all) {
+                        for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
                             if (el.offsetParent === null) continue;
-                            if (el.disabled) continue;
-                            const text = (el.innerText || el.value || '').trim().toLowerCase();
-                            if (!text || text.length > 100) continue;
-                            for (const kw of keywords) {
-                                if (text.includes(kw)) {
-                                    el.scrollIntoView({block: 'center'});
-                                    el.focus();
-                                    el.click();
-                                    return text;
-                                }
+                            const rect = el.getBoundingClientRect();
+                            const bg = window.getComputedStyle(el).backgroundColor;
+                            const text = (el.innerText || el.value || '').trim();
+                            if (text && text.length < 100) {
+                                r.buttons.push({
+                                    text: text.substring(0, 80),
+                                    bg: bg,
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                    w: rect.width,
+                                    h: rect.height,
+                                });
                             }
                         }
-                        return null;
+                        return r;
                     }
                 """)
-                if clicked:
-                    log.info(f"✅ ضغط على: {clicked}")
-                    await human_delay(5, 8)
-                    return True
+                log.info(f"📋 Checkboxes: {info.get('checkboxes')}")
+                log.info(f"📋 Buttons: {info.get('buttons')}")
             except Exception as e:
-                log.warning(f"JS click: {e}")
+                log.warning(f"فشل جلب العناصر: {e}")
 
-            # ✅ 3. Playwright locators
-            for sel in [
-                'button:has-text("Agree and continue")',
-                'button:has-text("I understand")',
-                'button:has-text("I agree")',
-                'button:has-text("Accept")',
-                'button:has-text("Agree")',
-                'button:has-text("Continue")',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0 and await el.is_visible():
-                        log.info(f"✅ Playwright: {sel}")
-                        await el.click(force=True)
-                        await human_delay(5, 8)
-                        return True
-                except Exception:
-                    continue
+            # ✅ 2. نضغط على checkbox
+            if info and info.get("checkboxes"):
+                for cb in info["checkboxes"]:
+                    if cb.get("checked"):
+                        log.info("✅ Checkbox already checked")
+                        continue
+                    try:
+                        for sel in [
+                            'input[type="checkbox"]',
+                        ]:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.count() > 0 and await el.is_visible():
+                                    await el.scroll_into_view_if_needed()
+                                    await human_delay(0.3, 0.5)
+                                    try:
+                                        await el.check(timeout=3000)
+                                    except Exception:
+                                        await el.click(force=True)
+                                    log.info(f"✅ Checkbox clicked")
+                                    await human_delay(1, 2)
+                                    break
+                            except Exception:
+                                continue
+                        # JS fallback
+                        await page.evaluate("""
+                            () => {
+                                for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                                    if (cb.offsetParent === null) continue;
+                                    if (cb.checked) continue;
+                                    cb.scrollIntoView({block: 'center'});
+                                    cb.focus();
+                                    const label = cb.closest('label');
+                                    if (label) label.click();
+                                    else cb.click();
+                                    cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                    cb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    return;
+                                }
+                            }
+                        """)
+                        await human_delay(1, 2)
+                    except Exception as e:
+                        log.warning(f"checkbox click: {e}")
 
+            # ✅ 3. نضغط على الزر الأزرق
+            if info and info.get("buttons"):
+                blue_btn = None
+                for b in info["buttons"]:
+                    txt = (b.get("text") or "").lower()
+                    if ("agree" in txt or "continue" in txt or "understand" in txt or
+                        "accept" in txt or "got it" in txt):
+                        blue_btn = b
+                        break
+                if not blue_btn:
+                    for b in info["buttons"]:
+                        bg = (b.get("bg") or "")
+                        if ("11, 87" in bg or "26, 115" in bg or "66, 133" in bg):
+                            blue_btn = b
+                            break
+
+                if blue_btn:
+                    x = blue_btn.get("x", 0)
+                    y = blue_btn.get("y", 0)
+                    log.info(f"🎯 الزر الأزرق: '{blue_btn.get('text')}' فـ ({x}, {y})")
+
+                    # ✅ 1. Playwright locator
+                    try:
+                        if blue_btn.get("text"):
+                            el = page.locator(f'button:has-text("{blue_btn["text"]}")').first
+                            if await el.count() > 0 and await el.is_visible():
+                                await el.scroll_into_view_if_needed()
+                                await human_delay(0.5, 1)
+                                await el.click(timeout=5000)
+                                log.info("✅ Clicked via Playwright")
+                                await human_delay(5, 8)
+                                return True
+                    except Exception as e:
+                        log.warning(f"Playwright: {e}")
+
+                    # ✅ 2. mouse.click
+                    try:
+                        if x > 0 and y > 0:
+                            await page.mouse.move(x, y, steps=15)
+                            await human_delay(0.5, 1)
+                            await page.mouse.down()
+                            await human_delay(0.15, 0.3)
+                            await page.mouse.up()
+                            log.info("✅ Clicked via mouse.click")
+                            await human_delay(5, 8)
+                            return True
+                    except Exception as e:
+                        log.warning(f"mouse: {e}")
+
+                    # ✅ 3. JS click
+                    try:
+                        clicked = await page.evaluate("""
+                            () => {
+                                const kws = ['agree and continue', 'agree', 'continue',
+                                             'i understand', 'understand', 'accept', 'got it'];
+                                for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
+                                    if (el.offsetParent === null || el.disabled) continue;
+                                    const t = (el.innerText || el.value || '').trim().toLowerCase();
+                                    if (!t || t.length > 100) continue;
+                                    for (const kw of kws) {
+                                        if (t.includes(kw)) {
+                                            el.click();
+                                            return t;
+                                        }
+                                    }
+                                }
+                                return null;
+                            }
+                        """)
+                        if clicked:
+                            log.info(f"✅ Clicked JS: {clicked}")
+                            await human_delay(5, 8)
+                            return True
+                    except Exception as e:
+                        log.warning(f"JS: {e}")
+
+            await human_delay(3, 5)
+
+        log.warning("⚠️ ما قدرناش نضغط")
         return False
 
     # ==========================================
