@@ -7,7 +7,7 @@ log = get_logger("CloudRunUI")
 
 
 class CloudRunUI:
-    """ينشر على Cloud Run عبر واجهة المستخدم (UI) — بلا API"""
+    """ينشر على Cloud Run عبر واجهة المستخدم (UI)"""
 
     def __init__(self, context):
         self.context = context
@@ -21,31 +21,28 @@ class CloudRunUI:
 
         log.info(f"🚀 نشر {service_name} على {region} (UI)")
 
-        # ✅ 1. نروحو لـ Cloud Run
-        url = "https://console.cloud.google.com/run"
+        # ✅ 1. نروحو مباشرة لـ Create Service page
+        url = "https://console.cloud.google.com/run/create"
         log.info(f"🌐 فتح: {url}")
         await page.goto(url, wait_until="domcontentloaded")
-        await human_delay(5, 8)
-        await self._send_shot(page, "📸 صفحة Cloud Run")
+        await human_delay(8, 12)
+        await self._send_shot(page, "📸 صفحة Create Service")
 
-        # ✅ 2. نضغطو على "Create Service"
-        log.info("🔍 نبحث عن زر Create...")
-        clicked = await self._click_create(page)
-        if not clicked:
-            raise RuntimeError("ما لقيناش زر Create")
+        log.info(f"URL الحالي: {page.url[:150]}")
 
-        await human_delay(5, 8)
-        await self._send_shot(page, "📸 بعد Create")
+        # ✅ 2. نتأكدو واش الصفحة تحملت
+        await self._wait_for_page_load(page)
 
-        # ✅ 3. نختارو Container Image
-        log.info("🐳 نختار Container Image...")
+        # ✅ 3. نختارو Container Image URL
+        log.info("🐳 نختار Container Image URL...")
         await self._select_container_image(page)
         await human_delay(2, 3)
+        await self._send_shot(page, "📸 بعد Container Image")
 
         # ✅ 4. نعبّيو Image URL
         log.info(f"🐳 Image: {image}")
         await self._fill_image(page, image)
-        await human_delay(2, 3)
+        await human_delay(3, 5)
         await self._send_shot(page, "📸 بعد Image")
 
         # ✅ 5. نختارو Region
@@ -53,27 +50,37 @@ class CloudRunUI:
         await self._select_region(page, region)
         await human_delay(2, 3)
 
-        # ✅ 6. نختارو RAM + CPU
+        # ✅ 6. نضبطو RAM + CPU
         log.info(f"💾 RAM: {memory} | ⚙️ CPU: {cpu}")
         await self._set_resources(page, memory, cpu)
         await human_delay(2, 3)
 
         # ✅ 7. نضبطو Port
-        if port != 8080:
-            log.info(f"🔌 Port: {port}")
-            await self._set_port(page, port)
-            await human_delay(2, 3)
+        log.info(f"🔌 Port: {port}")
+        await self._set_port(page, port)
+        await human_delay(2, 3)
 
-        # ✅ 8. نضغطو Create
+        # ✅ 8. نضبطو Service name
+        log.info(f"📦 Service: {service_name}")
+        await self._set_service_name(page, service_name)
+        await human_delay(2, 3)
+
+        # ✅ 9. نضبطو Authentication = Allow unauthenticated
+        log.info("🔓 Allow unauthenticated...")
+        await self._set_auth_unauthenticated(page)
+        await human_delay(2, 3)
+
+        # ✅ 10. نضغطو Create
         log.info("🖱️ نضغط Create...")
         created = await self._click_final_create(page)
         if not created:
+            await self._send_shot(page, "❌ ما لقيناش Create")
             raise RuntimeError("ما لقيناش زر Create النهائي")
 
         await human_delay(5, 8)
-        await self._send_shot(page, "📸 بعد Create النهائي")
+        await self._send_shot(page, "📸 بعد Create")
 
-        # ✅ 9. ننتظرو النشر يكمل
+        # ✅ 11. ننتظرو النشر
         log.info("⏳ ننتظر النشر...")
         service_url = await self._wait_for_deployment(page, timeout=300)
         if service_url:
@@ -82,196 +89,88 @@ class CloudRunUI:
 
         raise RuntimeError("ما لقيناش URL النهائي")
 
-    # ==================== Click Create (10 طرق) ====================
+    # ==================== Wait for Page Load ====================
 
-    async def _click_create(self, page) -> bool:
-        """يضغط على زر Create — بـ 10 طرق"""
-        log.info("🔍 نبحث عن زر Create...")
-
-        # ✅ 1. نسجل كل الأزرار
-        try:
-            buttons = await page.evaluate("""
-                () => {
-                    const r = [];
-                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
-                        if (el.offsetParent === null) continue;
-                        const t = (el.innerText || el.value || '').trim();
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        const rect = el.getBoundingClientRect();
-                        if (t && t.length < 100) {
-                            r.push({
-                                text: t.substring(0, 80),
-                                bg: bg,
-                                x: rect.x + rect.width / 2,
-                                y: rect.y + rect.height / 2,
-                                w: rect.width,
-                                h: rect.height,
-                            });
-                        }
-                    }
-                    return r;
-                }
-            """)
-            log.info(f"📋 الأزرار الموجودة: {buttons}")
-        except Exception as e:
-            log.warning(f"فشل جلب الأزرار: {e}")
-            buttons = []
-
-        # ✅ 2. نلقاو زر بأي طريقة
-        kws = [
-            'create service', 'deploy container', 'create',
-            'deploy', 'new service', 'add service',
-            'خدمة جديدة', 'إنشاء', 'نشر'
-        ]
-
-        # ✅ من القائمة المسجلة
-        for b in buttons:
-            txt = (b.get('text') or '').lower().strip()
-            for kw in kws:
-                if txt == kw or txt.startswith(kw) or kw in txt:
-                    if 'cancel' in txt or 'delete' in txt or 'إلغاء' in txt:
-                        continue
-                    x = b.get('x', 0)
-                    y = b.get('y', 0)
-                    log.info(f"✅ لقينا زر: '{b.get('text')}' فـ ({x}, {y})")
-                    try:
-                        await page.mouse.move(x, y, steps=10)
-                        await human_delay(0.3, 0.5)
-                        await page.mouse.down()
-                        await human_delay(0.1, 0.2)
-                        await page.mouse.up()
-                        await human_delay(3, 5)
-                        return True
-                    except Exception as e:
-                        log.warning(f"mouse click فشل: {e}")
-
-        # ✅ 3. Playwright locators
-        for sel in [
-            'button:has-text("Create Service")',
-            'button:has-text("Deploy Container")',
-            'button:has-text("Deploy")',
-            'a:has-text("Create Service")',
-            'a:has-text("Deploy Container")',
-            '[role="button"]:has-text("Create")',
-            '[role="button"]:has-text("Deploy")',
-        ]:
+    async def _wait_for_page_load(self, page, timeout: int = 60):
+        log.info("⏳ ننتظر الصفحة تحمل...")
+        for i in range(timeout // 3):
+            await asyncio.sleep(3)
             try:
-                el = page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    log.info(f"✅ Playwright: {sel}")
-                    await el.click(timeout=5000)
-                    await human_delay(3, 5)
+                info = await page.evaluate("""
+                    () => {
+                        const inputs = document.querySelectorAll('input');
+                        const buttons = document.querySelectorAll('button');
+                        const text = (document.body.innerText || '').toLowerCase();
+                        return {
+                            inputs: inputs.length,
+                            buttons: buttons.length,
+                            has_image_field: text.includes('container image') || text.includes('image url'),
+                            has_create: text.includes('create'),
+                            url: window.location.href.substring(0, 200),
+                        };
+                    }
+                """)
+                log.info(f"📋 inputs: {info.get('inputs')}, buttons: {info.get('buttons')}, has_image_field: {info.get('has_image_field')}")
+
+                if info.get('inputs', 0) > 3 and info.get('buttons', 0) > 3:
+                    log.info("✅ الصفحة تحملت")
                     return True
             except Exception:
-                continue
-
-        # ✅ 4. JS click
-        try:
-            clicked = await page.evaluate("""
-                () => {
-                    const kws = ['create service', 'deploy container', 'create',
-                                 'deploy', 'new service', 'add service'];
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-                        if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || el.value || '').trim().toLowerCase();
-                        if (!t || t.length > 100) continue;
-                        if (t.includes('cancel') || t.includes('delete')) continue;
-                        for (const kw of kws) {
-                            if (t === kw || t.includes(kw)) {
-                                el.click();
-                                return t;
-                            }
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if clicked:
-                log.info(f"✅ JS: {clicked}")
-                await human_delay(3, 5)
-                return True
-        except Exception as e:
-            log.warning(f"JS: {e}")
-
-        # ✅ 5. زر أزرق
-        try:
-            clicked = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-                        if (el.offsetParent === null || el.disabled) continue;
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        if (bg.includes('11, 87') || bg.includes('26, 115') || bg.includes('66, 133')) {
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            if (t.includes('cancel') || t.includes('delete')) continue;
-                            el.click();
-                            return t || 'blue';
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if clicked:
-                log.info(f"✅ Blue button: {clicked}")
-                await human_delay(3, 5)
-                return True
-        except Exception:
-            pass
-
-        # ✅ 6. زر ➕ (Add icon)
-        try:
-            clicked = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-                        if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || el.textContent || '').trim();
-                        if (t === '+' || t === 'add' || t === 'Add' || t.includes('add_box')) {
-                            el.click();
-                            return 'add-icon';
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if clicked:
-                log.info(f"✅ Add icon: {clicked}")
-                await human_delay(3, 5)
-                return True
-        except Exception:
-            pass
-
-        # ✅ 7. نصور الصفحة
-        try:
-            await take_screenshot(page, "no_create_button")
-        except Exception:
-            pass
-
-        log.warning("❌ ما لقيناش زر Create")
+                pass
         return False
 
     # ==================== Select Container Image ====================
 
     async def _select_container_image(self, page):
+        """يختار Container Image URL"""
         for sel in [
-            'button:has-text("Container Image")',
-            'label:has-text("Container Image")',
-            '[role="radio"]:has-text("Container Image")',
+            'button:has-text("Container Image URL")',
+            'label:has-text("Container Image URL")',
+            '[role="radio"]:has-text("Container Image URL")',
+            'button:has-text("Container image")',
+            'label:has-text("Container image")',
         ]:
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
                     log.info(f"✅ Container Image: {sel}")
                     await el.click()
+                    await human_delay(1, 2)
                     return
             except Exception:
                 continue
 
+        # ✅ JS
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('label, button, [role="radio"], [role="button"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t.includes('container image') || t.includes('container image url')) {
+                            el.click();
+                            return t;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ JS Container Image: {clicked}")
+                await human_delay(1, 2)
+        except Exception:
+            pass
+
     # ==================== Fill Image ====================
 
     async def _fill_image(self, page, image: str):
+        """يعبّي Image URL"""
         for sel in [
             'input[aria-label*="Container image URL" i]',
             'input[aria-label*="Image URL" i]',
+            'input[aria-label*="image" i]',
             'input[placeholder*="image" i]',
+            'input[placeholder*="us-docker" i]',
             'input[name*="image" i]',
             'input[formcontrolname*="image" i]',
             'input[type="text"]',
@@ -281,6 +180,7 @@ class CloudRunUI:
                 if await el.count() == 0 or not await el.is_visible():
                     continue
                 log.info(f"✅ Image field: {sel}")
+                await el.scroll_into_view_if_needed()
                 await el.click()
                 await human_delay(0.5, 1)
                 await el.fill("")
@@ -297,6 +197,7 @@ class CloudRunUI:
         for sel in [
             'input[aria-label*="Region" i]',
             '[role="combobox"][aria-label*="Region" i]',
+            'input[formcontrolname*="region" i]',
         ]:
             try:
                 el = page.locator(sel).first
@@ -304,10 +205,14 @@ class CloudRunUI:
                     continue
                 await el.click()
                 await human_delay(1, 2)
+                # ✅ نمسحو القيمة الحالية
+                await el.fill("")
+                await human_delay(0.3, 0.5)
                 await page.keyboard.type(region, delay=80)
                 await human_delay(1, 2)
                 await page.keyboard.press("Enter")
                 await human_delay(1, 2)
+                log.info(f"✅ Region: {region}")
                 return
             except Exception:
                 continue
@@ -315,10 +220,11 @@ class CloudRunUI:
     # ==================== Set Resources ====================
 
     async def _set_resources(self, page, memory: str, cpu: str):
-        # ✅ نضغطو "Container" tab
+        # ✅ نضغطو "Container, Networking, Security" tab
         for sel in [
-            'button:has-text("Container")',
+            'button:has-text("Container, Networking, Security")',
             'button:has-text("Container(s)")',
+            'button:has-text("Container")',
             '[role="tab"]:has-text("Container")',
         ]:
             try:
@@ -340,10 +246,13 @@ class CloudRunUI:
                 if await el.count() > 0 and await el.is_visible():
                     await el.click()
                     await human_delay(1, 2)
+                    await el.fill("")
+                    await human_delay(0.3, 0.5)
                     await page.keyboard.type(memory, delay=80)
                     await human_delay(1, 2)
                     await page.keyboard.press("Enter")
                     await human_delay(1, 2)
+                    log.info(f"✅ RAM: {memory}")
                     break
             except Exception:
                 continue
@@ -358,10 +267,13 @@ class CloudRunUI:
                 if await el.count() > 0 and await el.is_visible():
                     await el.click()
                     await human_delay(1, 2)
+                    await el.fill("")
+                    await human_delay(0.3, 0.5)
                     await page.keyboard.type(cpu, delay=80)
                     await human_delay(1, 2)
                     await page.keyboard.press("Enter")
                     await human_delay(1, 2)
+                    log.info(f"✅ CPU: {cpu}")
                     break
             except Exception:
                 continue
@@ -370,6 +282,7 @@ class CloudRunUI:
 
     async def _set_port(self, page, port: int):
         for sel in [
+            'input[aria-label*="Container port" i]',
             'input[aria-label*="Port" i]',
             'input[name*="port" i]',
         ]:
@@ -380,17 +293,93 @@ class CloudRunUI:
                     await human_delay(0.5, 1)
                     await el.fill("")
                     await el.fill(str(port))
+                    log.info(f"✅ Port: {port}")
                     return
             except Exception:
                 continue
 
+    # ==================== Set Service Name ====================
+
+    async def _set_service_name(self, page, service_name: str):
+        for sel in [
+            'input[aria-label*="Service name" i]',
+            'input[aria-label*="name" i]',
+            'input[formcontrolname*="serviceName" i]',
+            'input[formcontrolname*="name" i]',
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0 or not await el.is_visible():
+                    continue
+                # ✅ نتحققو إذا الحقل ماشي فارغ
+                current = await el.input_value()
+                if current and current.strip():
+                    log.info(f"✅ Service name موجود: {current}")
+                    return
+                await el.click()
+                await human_delay(0.5, 1)
+                await el.fill("")
+                await human_delay(0.3, 0.5)
+                await el.fill(service_name)
+                await human_delay(1, 2)
+                log.info(f"✅ Service name: {service_name}")
+                return
+            except Exception:
+                continue
+
+    # ==================== Set Auth ====================
+
+    async def _set_auth_unauthenticated(self, page):
+        """Allow unauthenticated"""
+        try:
+            # ✅ نلقاو radio "Allow unauthenticated invocations"
+            clicked = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('label, [role="radio"], input[type="radio"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || el.value || '').toLowerCase();
+                        if (t.includes('allow unauthenticated') || t.includes('allow all')) {
+                            el.click();
+                            return t;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ Auth: {clicked}")
+                await human_delay(1, 2)
+        except Exception as e:
+            log.warning(f"auth: {e}")
+
     # ==================== Click Final Create ====================
 
     async def _click_final_create(self, page) -> bool:
+        log.info("🔍 نبحث عن زر Create...")
+
+        # ✅ نسجل الأزرار
+        try:
+            buttons = await page.evaluate("""
+                () => {
+                    const r = [];
+                    for (const el of document.querySelectorAll('button, input[type="submit"], [role="button"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || el.value || '').trim();
+                        if (t && t.length < 60) r.push(t);
+                    }
+                    return r;
+                }
+            """)
+            log.info(f"📋 الأزرار: {buttons}")
+        except Exception:
+            pass
+
+        # ✅ 1. Playwright locators
         for sel in [
             'button:has-text("Create")',
             'button:has-text("Deploy")',
             '[role="button"]:has-text("Create")',
+            '[role="button"]:has-text("Deploy")',
         ]:
             try:
                 el = page.locator(sel).first
@@ -400,9 +389,63 @@ class CloudRunUI:
                         continue
                     log.info(f"✅ Create: {sel}")
                     await el.click(timeout=5000)
+                    await human_delay(5, 8)
                     return True
             except Exception:
                 continue
+
+        # ✅ 2. JS
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const kws = ['create', 'deploy'];
+                    for (const el of document.querySelectorAll('button, input[type="submit"], [role="button"]')) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (!t || t.length > 100) continue;
+                        if (t.includes('cancel') || t.includes('delete')) continue;
+                        for (const kw of kws) {
+                            if (t === kw || t.includes(kw)) {
+                                el.scroll_into_view_if_needed();
+                                el.click();
+                                return t;
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ JS: {clicked}")
+                await human_delay(5, 8)
+                return True
+        except Exception:
+            pass
+
+        # ✅ 3. آخر زر أزرق
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('button, input[type="submit"]')) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        if (bg.includes('11, 87') || bg.includes('26, 115') || bg.includes('66, 133')) {
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            if (t.includes('cancel')) continue;
+                            el.click();
+                            return t || 'blue-button';
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ Blue: {clicked}")
+                await human_delay(5, 8)
+                return True
+        except Exception:
+            pass
+
         return False
 
     # ==================== Wait for Deployment ====================
