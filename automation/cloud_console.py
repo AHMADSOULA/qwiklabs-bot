@@ -52,11 +52,17 @@ class CloudConsole:
                     await human_delay(5, 7)
                     await take_screenshot(page, f"cc_after_signin_{attempt}")
 
-                # 2. Welcome
+                # 2. Welcome / TOS / new
+                if "welcome" in page.url.lower() or "/new" in page.url.lower():
+                    log.info("📋 صفحة Welcome/TOS")
+                    await self._handle_welcome_page(page)
+                    await human_delay(8, 12)
+
+                # 3. Welcome (عام)
                 await self._handle_welcome_page(page)
                 await human_delay(4, 6)
 
-                # 3. Console?
+                # 4. Console?
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
                     break
@@ -100,14 +106,17 @@ class CloudConsole:
         return False
 
     async def _is_console_ready(self, page) -> bool:
+        """✅ بلا /welcome — باش نعالجو TOS"""
         url = page.url
         if "console.cloud.google.com" not in url:
             return False
         if "signin" in url.lower() or "accounts.google.com" in url:
             return False
+        if "/welcome" in url.lower() or "/new" in url.lower():
+            return False
         if "project=" in url:
             return True
-        if "/home/" in url or "/welcome" in url:
+        if "/home/" in url:
             return True
         return False
 
@@ -348,25 +357,68 @@ class CloudConsole:
             except Exception:
                 continue
 
-    async def _handle_welcome_page(self, page, max_attempts: int = 2) -> bool:
+    # ==========================================
+    # ✅ Welcome / TOS — checkbox + Agree
+    # ==========================================
+
+    async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
+        """
+        يتعامل مع صفحة Welcome/TOS:
+        1. يضغط checkbox (☐ I agree...)
+        2. يضغط زر Agree and continue / I understand / Accept
+        """
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # طريقة 1: JS click
+            # ✅ 1. نضغط على checkbox
+            try:
+                clicked_cb = await page.evaluate("""
+                    () => {
+                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                        for (const cb of checkboxes) {
+                            if (cb.offsetParent === null) continue;
+                            if (cb.checked) return { already: true };
+                            cb.scrollIntoView({block: 'center'});
+                            cb.focus();
+                            const label = cb.closest('label');
+                            if (label) label.click();
+                            else cb.click();
+                            cb.dispatchEvent(new Event('change', { bubbles: true }));
+                            cb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                            return { checked: cb.checked };
+                        }
+                        return null;
+                    }
+                """)
+                if clicked_cb:
+                    log.info(f"✅ checkbox: {clicked_cb}")
+                    await human_delay(1, 2)
+            except Exception as e:
+                log.warning(f"checkbox: {e}")
+
+            # ✅ 2. نضغط الزر
             try:
                 clicked = await page.evaluate("""
                     () => {
                         const all = document.querySelectorAll(
                             'button, a, [role="button"], input[type="submit"]'
                         );
+                        const keywords = [
+                            'agree and continue', 'i agree', 'i understand',
+                            'understand', 'accept', 'agree', 'continue', 'got it'
+                        ];
                         for (const el of all) {
-                            const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                            if (text.includes('accept') || text.includes('agree') ||
-                                text.includes('confirm') || text.includes('got it') ||
-                                text.includes('i understand') ||
-                                text.includes('قبول') || text.includes('موافق')) {
-                                el.click();
-                                return el.innerText || 'clicked';
+                            if (el.offsetParent === null) continue;
+                            if (el.disabled) continue;
+                            const text = (el.innerText || el.value || '').trim().toLowerCase();
+                            if (!text || text.length > 100) continue;
+                            for (const kw of keywords) {
+                                if (text.includes(kw)) {
+                                    el.scrollIntoView({block: 'center'});
+                                    el.focus();
+                                    el.click();
+                                    return text;
+                                }
                             }
                         }
                         return null;
@@ -374,36 +426,37 @@ class CloudConsole:
                 """)
                 if clicked:
                     log.info(f"✅ ضغط على: {clicked}")
-                    await human_delay(4, 6)
+                    await human_delay(5, 8)
                     return True
             except Exception as e:
-                log.warning(f"فشل JS click: {e}")
+                log.warning(f"JS click: {e}")
 
-            # طريقة 2: locators
+            # ✅ 3. Playwright locators
             for sel in [
+                'button:has-text("Agree and continue")',
                 'button:has-text("I understand")',
-                'button:has-text("Accept")',
                 'button:has-text("I agree")',
+                'button:has-text("Accept")',
                 'button:has-text("Agree")',
-                'button:has-text("Confirm")',
-                'button:has-text("Got it")',
                 'button:has-text("Continue")',
-                'a:has-text("Accept")',
             ]:
                 try:
                     el = page.locator(sel).first
-                    if await el.count() > 0:
-                        log.info(f"✅ لقيت: {sel}")
+                    if await el.count() > 0 and await el.is_visible():
+                        log.info(f"✅ Playwright: {sel}")
                         await el.click(force=True)
-                        await human_delay(4, 6)
+                        await human_delay(5, 8)
                         return True
                 except Exception:
                     continue
 
-            break
         return False
 
-    async def _wait_for_console(self, page, timeout: int = 60000):
+    # ==========================================
+    # ✅ انتظار Console
+    # ==========================================
+
+    async def _wait_for_console(self, page, timeout: int = 30000):
         log.info("انتظار تحميل Cloud Console...")
         try:
             await page.wait_for_function(
@@ -417,5 +470,15 @@ class CloudConsole:
             )
         except Exception:
             log.warning("Timeout فـ انتظار Console")
-        await human_delay(3, 5)
-        await take_screenshot(page, "cc_console_ready")
+
+        # ✅ نستنو 5 ثواني إضافية
+        await human_delay(5, 8)
+
+        # ✅ Screenshot مع timeout قصير
+        try:
+            import time
+            path = f"/app/data/screenshots/{int(time.time())}_cc_ready.png"
+            await page.screenshot(path=path, full_page=False, timeout=15000)
+            log.info(f"📸 {path}")
+        except Exception as e:
+            log.warning(f"فشل screenshot: {e}")
