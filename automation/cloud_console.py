@@ -47,17 +47,14 @@ class CloudConsole:
 
                 url_before = page.url
 
-                # ✅ نضغط على I understand
                 clicked = await self._click_i_understand(page)
                 if clicked:
                     log.info(f"✅ ضغطنا: '{clicked}'")
                     await self._send_shot(page, f"✅ ضغطنا I understand")
 
-                    # ✅ نستنى 15-20 ثانية
                     log.info("⏳ ننتظر 15s باش Google تسجل...")
                     await human_delay(15, 20)
 
-                    # ✅ نتحقق واش الصفحة تبدلت
                     changed = await self._wait_for_url_change(page, url_before, timeout=15)
                     if changed:
                         log.info("🎉 الصفحة تبدلت!")
@@ -151,46 +148,157 @@ class CloudConsole:
         return False
 
     async def _click_i_understand(self, page) -> str:
-        """يضغط على I understand"""
+        """
+        يضغط على I understand بـ 5 طرق.
+        """
         log.info("🔍 نبحث عن I understand...")
 
-        # نسجل الأزرار
+        # ✅ نسجل الأزرار
+        button_info = None
         try:
             buttons = await page.evaluate("""
                 () => {
                     const r = [];
                     for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
                         if (el.offsetParent === null) continue;
-                        const t = (el.innerText || el.value || '').trim();
+                        const rect = el.getBoundingClientRect();
                         const bg = window.getComputedStyle(el).backgroundColor;
-                        if (t && t.length < 100) r.push({text: t.substring(0, 80), bg: bg});
+                        const t = (el.innerText || el.value || '').trim();
+                        if (t && t.length < 100) {
+                            r.push({
+                                text: t.substring(0, 80),
+                                bg: bg,
+                                x: rect.x + rect.width / 2,
+                                y: rect.y + rect.height / 2,
+                                w: rect.width,
+                                h: rect.height,
+                            });
+                        }
                     }
                     return r;
                 }
             """)
             log.info(f"📋 الأزرار: {buttons}")
-        except Exception:
-            pass
 
-        # ✅ JS click
+            keywords = ['i understand', 'understand', 'accept', 'i agree', 'agree', 'continue']
+            for b in buttons:
+                txt = (b.get("text") or "").lower()
+                for kw in keywords:
+                    if kw in txt:
+                        button_info = b
+                        break
+                if button_info:
+                    break
+
+            if not button_info:
+                for b in buttons:
+                    bg = b.get("bg", "")
+                    if "11, 87" in bg or "26, 115" in bg or "66, 133" in bg:
+                        button_info = b
+                        break
+        except Exception as e:
+            log.warning(f"فشل جلب الأزرار: {e}")
+
+        if not button_info:
+            log.warning("⚠️ ما لقيناش الزر")
+            return None
+
+        target_text = button_info.get("text", "")
+        target_x = button_info.get("x", 0)
+        target_y = button_info.get("y", 0)
+        log.info(f"🎯 الزر: '{target_text}' فـ ({target_x}, {target_y})")
+
+        # ============================================
+        # ✅ الطريقة 1: Playwright locator
+        # ============================================
+        log.info("🖱️ الطريقة 1: Playwright locator")
+        try:
+            sel = f'button:has-text("{target_text}")'
+            el = page.locator(sel).first
+            if await el.count() > 0 and await el.is_visible():
+                await el.scroll_into_view_if_needed()
+                await human_delay(0.3, 0.5)
+                await el.click(timeout=5000)
+                log.info("✅ طريقة 1 نجحت")
+                await human_delay(2, 3)
+                return target_text
+        except Exception as e:
+            log.warning(f"طريقة 1 فشلت: {e}")
+
+        # ============================================
+        # ✅ الطريقة 2: mouse.click بالإحداثيات
+        # ============================================
+        log.info(f"🖱️ الطريقة 2: mouse.click على ({target_x}, {target_y})")
+        try:
+            if target_x > 0 and target_y > 0:
+                await page.mouse.move(target_x, target_y, steps=15)
+                await human_delay(0.5, 0.8)
+                await page.mouse.down()
+                await human_delay(0.1, 0.2)
+                await page.mouse.up()
+                log.info("✅ طريقة 2 نجحت")
+                await human_delay(2, 3)
+                return target_text
+        except Exception as e:
+            log.warning(f"طريقة 2 فشلت: {e}")
+
+        # ============================================
+        # ✅ الطريقة 3: dispatchEvent 5 أحداث
+        # ============================================
+        log.info("🖱️ الطريقة 3: dispatchEvent 5 أحداث")
+        try:
+            dispatched = await page.evaluate("""
+                () => {
+                    const keywords = ['i understand', 'understand', 'accept', 'i agree', 'agree', 'continue'];
+                    const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"]');
+                    for (const el of all) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const text = (el.innerText || el.value || '').trim().toLowerCase();
+                        if (!text || text.length > 100) continue;
+                        for (const kw of keywords) {
+                            if (text.includes(kw)) {
+                                const rect = el.getBoundingClientRect();
+                                const cx = rect.x + rect.width / 2;
+                                const cy = rect.y + rect.height / 2;
+                                const opts = {bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0};
+                                el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                                el.dispatchEvent(new MouseEvent('mousedown', opts));
+                                el.dispatchEvent(new PointerEvent('pointerup', opts));
+                                el.dispatchEvent(new MouseEvent('mouseup', opts));
+                                el.dispatchEvent(new MouseEvent('click', opts));
+                                return text;
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if dispatched:
+                log.info(f"✅ طريقة 3 نجحت: {dispatched}")
+                await human_delay(2, 3)
+                return dispatched
+        except Exception as e:
+            log.warning(f"طريقة 3 فشلت: {e}")
+
+        # ============================================
+        # ✅ الطريقة 4: JS click
+        # ============================================
+        log.info("🖱️ الطريقة 4: JS click")
         try:
             clicked = await page.evaluate("""
                 () => {
-                    const keywords = ['i understand', 'understand', 'accept', 'i accept',
-                                      'agree', 'i agree', 'continue', 'got it',
-                                      'i accept the terms', 'i agree to'];
-                    const all = document.querySelectorAll(
-                        'button, a, [role="button"], input[type="submit"], input[type="button"]'
-                    );
+                    const keywords = ['i understand', 'understand', 'accept', 'i agree', 'agree', 'continue'];
+                    const all = document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]');
                     for (const el of all) {
                         if (el.offsetParent === null || el.disabled) continue;
-                        const text = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                        const text = (el.innerText || el.value || '').trim().toLowerCase();
                         if (!text || text.length > 100) continue;
                         for (const kw of keywords) {
                             if (text.includes(kw)) {
                                 el.scrollIntoView({block: 'center'});
+                                el.focus();
                                 el.click();
-                                return text.substring(0, 80);
+                                return text;
                             }
                         }
                     }
@@ -198,38 +306,47 @@ class CloudConsole:
                 }
             """)
             if clicked:
+                log.info(f"✅ طريقة 4 نجحت: {clicked}")
+                await human_delay(2, 3)
                 return clicked
         except Exception as e:
-            log.warning(f"JS: {e}")
+            log.warning(f"طريقة 4 فشلت: {e}")
 
-        # ✅ Playwright
-        for sel in [
-            'button:has-text("I understand")',
-            'button:has-text("Accept")',
-            'button:has-text("I agree")',
-            'button:has-text("Continue")',
-            'button[type="submit"]',
-        ]:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible():
-                    await el.click(timeout=5000)
-                    return sel
-            except Exception:
-                continue
+        # ============================================
+        # ✅ الطريقة 5: آخر زر أزرق
+        # ============================================
+        log.info("🖱️ الطريقة 5: آخر زر أزرق")
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const all = document.querySelectorAll('button, input[type="submit"], a[role="button"]');
+                    for (const el of all) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        if (bg.includes('11, 87') || bg.includes('26, 115') || bg.includes('66, 133')) {
+                            el.click();
+                            return (el.innerText || '').substring(0, 80) || 'blue-button';
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                log.info(f"✅ طريقة 5 نجحت: {clicked}")
+                await human_delay(2, 3)
+                return clicked
+        except Exception as e:
+            log.warning(f"طريقة 5 فشلت: {e}")
 
         return None
 
     async def _wait_for_url_change(self, page, url_before: str, timeout: int = 15) -> bool:
-        """ينتظر URL يتغير"""
         log.info(f"⏳ ننتظر URL يتغير...")
         for i in range(timeout):
             await asyncio.sleep(1)
             if page.url != url_before:
                 log.info(f"✅ URL تبدل")
                 return True
-
-            # ✅ نتحققو واش الزر اختفى (يعني TOS راح)
             try:
                 has_i_understand = await page.evaluate("""
                     () => {
@@ -308,7 +425,6 @@ class CloudConsole:
                     await self._send_shot(page, f"✅ email")
                     break
 
-                # JS fallback
                 await el.evaluate("""(el, val) => {
                     el.focus();
                     el.value = '';
