@@ -11,16 +11,20 @@ class CloudConsole:
         self.context = context
         self.username = None
         self.password = None
+        self.user_id = None
+        self.sender = None
 
-    async def login(self, username: str, password: str):
+    async def login(self, username: str, password: str, user_id: int = None, sender=None):
         self.username = username
         self.password = password
+        self.user_id = user_id
+        self.sender = sender
 
         page = await self.context.new_page()
         log.info("تسجيل الدخول إلى Cloud Console...")
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
-        await take_screenshot(page, "cc_01_loaded")
+        await self._send_shot(page, "📸 فتح Cloud Console")
         log.info(f"URL بعد الفتح: {page.url}")
 
         try:
@@ -28,33 +32,32 @@ class CloudConsole:
                 log.info(f"--- محاولة {attempt + 1} ---")
                 await self._wait_for_login_or_console(page)
 
-                # 🔍 فحص: كلمة سر غلط؟
+                # 🔍 كلمة سر غلط؟
                 if await self._has_wrong_password_error(page):
                     log.warning("⚠️ كلمة السر غلط!")
-                    await take_screenshot(page, f"cc_wrong_pwd_{attempt}")
-                    raise RuntimeError(
-                        "❌ كلمة السر غير صحيحة.\nجدد الرابط من Skills."
-                    )
+                    await self._send_shot(page, "❌ كلمة سر غلط")
+                    raise RuntimeError("❌ كلمة السر غير صحيحة.\nجدد الرابط من Skills.")
 
-                # 🔍 فحص: verify phone?
+                # 🔍 verify؟
                 if await self._has_verify_required(page):
                     log.warning("⚠️ Google كتطلب verify phone/email")
-                    await take_screenshot(page, f"cc_verify_{attempt}")
-                    raise RuntimeError(
-                        "❌ Google كتطلب التحقق من الهاتف.\n"
-                        "سجل يدوياً أول مرة."
-                    )
+                    await self._send_shot(page, "⚠️ Verify مطلوب")
+                    raise RuntimeError("❌ Google كتطلب التحقق من الهاتف.")
 
-                # 1. إذا كانت Sign in → سجل
+                # 1. Sign in?
                 if await self._is_signin_page(page):
-                    log.info(f"صفحة Sign in (محاولة {attempt + 1})")
+                    log.info(f"🔑 صفحة Sign in (محاولة {attempt + 1})")
+                    await self._send_shot(page, "📸 صفحة Sign in")
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 7)
-                    await take_screenshot(page, f"cc_after_signin_{attempt}")
+                    # ✅ Screenshot بعد Sign in
+                    await self._send_shot(page, "✅ بعد Sign in")
 
                 # 2. Welcome / TOS / new
                 if "welcome" in page.url.lower() or "/new" in page.url.lower():
                     log.info("📋 صفحة Welcome/TOS")
+                    # ✅ Screenshot قبل ما نضغط
+                    await self._send_shot(page, "📋 صفحة Welcome")
                     await self._handle_welcome_page(page)
                     await human_delay(8, 12)
 
@@ -65,6 +68,8 @@ class CloudConsole:
                 # 4. Console?
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
+                    # ✅ Screenshot بعد دخول Google Cloud
+                    await self._send_shot(page, "✅ دخل Google Cloud")
                     break
 
                 await human_delay(3, 5)
@@ -75,8 +80,30 @@ class CloudConsole:
 
         except Exception as e:
             log.error(f"فشل تسجيل الدخول: {e}")
-            await take_screenshot(page, "cc_error")
+            await self._send_shot(page, "❌ فشل")
             raise
+
+    # ==================== Screenshot Helper ====================
+
+    async def _send_shot(self, page, caption: str = ""):
+        """ياخد Screenshot ويرسلو للبوت"""
+        try:
+            from telegram import InputFile
+            import os
+            shot = await take_screenshot(page, caption[:30] if caption else "shot")
+            if not shot or not os.path.exists(shot):
+                return
+            if self.sender:
+                try:
+                    with open(shot, "rb") as f:
+                        await self.sender.reply_photo(
+                            photo=InputFile(f),
+                            caption=caption[:1000]
+                        )
+                except Exception as e:
+                    log.warning(f"فشل إرسال الصورة: {e}")
+        except Exception as e:
+            log.warning(f"_send_shot: {e}")
 
     # ==========================================
     # 🔍 دوال الفحص
@@ -235,7 +262,7 @@ class CloudConsole:
                 continue
 
         if not email_filled:
-            await take_screenshot(page, "cc_email_not_filled")
+            await self._send_shot(page, "❌ فشل email")
             raise RuntimeError("ما قدرتش نكتب الإيميل")
 
         # ===== Next =====
@@ -256,7 +283,7 @@ class CloudConsole:
             if solved:
                 log.info("✅ تم حل CAPTCHA")
                 await human_delay(4, 6)
-                await take_screenshot(page, "cc_after_captcha")
+                await self._send_shot(page, "✅ بعد CAPTCHA")
         except Exception as e:
             log.warning(f"فشل حل CAPTCHA: {e}")
 
@@ -327,7 +354,7 @@ class CloudConsole:
                 continue
 
         if not password_filled:
-            await take_screenshot(page, "cc_pwd_not_filled")
+            await self._send_shot(page, "❌ فشل password")
             raise RuntimeError("ما قدرتش نكتب كلمة السر")
 
         # ===== Next =====
@@ -471,10 +498,8 @@ class CloudConsole:
         except Exception:
             log.warning("Timeout فـ انتظار Console")
 
-        # ✅ نستنو 5 ثواني إضافية
         await human_delay(5, 8)
 
-        # ✅ Screenshot مع timeout قصير
         try:
             import time
             path = f"/app/data/screenshots/{int(time.time())}_cc_ready.png"
