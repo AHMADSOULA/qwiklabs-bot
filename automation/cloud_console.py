@@ -1,3 +1,4 @@
+import asyncio
 from utils.logger import get_logger
 from utils.helpers import human_delay, human_move
 from utils.screenshot import take_screenshot
@@ -182,7 +183,6 @@ class CloudConsole:
                     email_filled = True
                     break
 
-                # طريقة 2: type
                 log.warning("fill ما خدمش — نجرب type")
                 await el.click()
                 await human_delay(0.3, 0.5)
@@ -195,7 +195,6 @@ class CloudConsole:
                     email_filled = True
                     break
 
-                # طريقة 3: JS
                 log.warning("type ما خدمش — نجرب JS")
                 await page.evaluate(
                     """(args) => {
@@ -230,12 +229,11 @@ class CloudConsole:
             await take_screenshot(page, "cc_email_not_filled")
             raise RuntimeError("ما قدرتش نكتب الإيميل")
 
-        # ===== Next =====
         await human_delay(0.5, 1.2)
         await self._click_next(page, "email")
         await human_delay(3, 5)
 
-        # ========== 🔍 CAPTCHA Detection ==========
+        # ========== CAPTCHA ==========
         try:
             from automation.captcha_solver import detect_and_solve_captcha
             from config import config
@@ -322,7 +320,6 @@ class CloudConsole:
             await take_screenshot(page, "cc_pwd_not_filled")
             raise RuntimeError("ما قدرتش نكتب كلمة السر")
 
-        # ===== Next =====
         await human_delay(0.5, 1.2)
         await self._click_next(page, "password")
         await human_delay(4, 7)
@@ -353,7 +350,6 @@ class CloudConsole:
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
-            # طريقة 1: JS click
             try:
                 clicked = await page.evaluate("""
                     () => {
@@ -379,7 +375,6 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"فشل JS click: {e}")
 
-            # طريقة 2: locators
             for sel in [
                 'button:has-text("Accept")',
                 'button:has-text("I agree")',
@@ -415,6 +410,6 @@ class CloudConsole:
                 timeout=timeout,
             )
         except Exception:
-            log.warning("Timeout فـ انتظار Console")
+            log.warning("Timeout فـ انتظار Cloud Console")
         await human_delay(3, 5)
         await take_screenshot(page, "cc_console_ready")
