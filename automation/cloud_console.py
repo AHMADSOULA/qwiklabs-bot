@@ -50,13 +50,11 @@ class CloudConsole:
                     await self._send_shot(page, "📸 صفحة Sign in")
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 7)
-                    # ✅ Screenshot بعد Sign in
                     await self._send_shot(page, "✅ بعد Sign in")
 
                 # 2. Welcome / TOS / new
                 if "welcome" in page.url.lower() or "/new" in page.url.lower():
                     log.info("📋 صفحة Welcome/TOS")
-                    # ✅ Screenshot قبل ما نضغط
                     await self._send_shot(page, "📋 صفحة Welcome")
                     await self._handle_welcome_page(page)
                     await human_delay(8, 12)
@@ -68,7 +66,6 @@ class CloudConsole:
                 # 4. Console?
                 if await self._is_console_ready(page):
                     log.info(f"✅ وصلنا للـ Console")
-                    # ✅ Screenshot بعد دخول Google Cloud
                     await self._send_shot(page, "✅ دخل Google Cloud")
                     break
 
@@ -270,22 +267,61 @@ class CloudConsole:
         await self._click_next(page, "email")
         await human_delay(3, 5)
 
-        # ========== 🔍 CAPTCHA ==========
-        try:
-            from automation.captcha_solver import detect_and_solve_captcha
-            from config import config
-            await asyncio.sleep(2)
-            solved = await detect_and_solve_captcha(
-                page,
-                config.CAPTCHA_USERID,
-                config.CAPTCHA_APIKEY,
-            )
-            if solved:
-                log.info("✅ تم حل CAPTCHA")
-                await human_delay(4, 6)
-                await self._send_shot(page, "✅ بعد CAPTCHA")
-        except Exception as e:
-            log.warning(f"فشل حل CAPTCHA: {e}")
+        # ============================================
+        # 🆕 🔍 CAPTCHA — فحص متعدد (5 محاولات)
+        # ============================================
+        captcha_solved = False
+        for captcha_attempt in range(5):
+            log.info(f"🔍 فحص CAPTCHA (محاولة {captcha_attempt + 1}/5)...")
+            await human_delay(3, 5)
+
+            try:
+                from automation.captcha_solver import has_captcha, detect_and_solve_captcha
+                from config import config
+
+                if await has_captcha(page):
+                    log.info("🚨 CAPTCHA مطلوبة!")
+                    await self._send_shot(page, "🚨 CAPTCHA")
+
+                    solved = await detect_and_solve_captcha(
+                        page,
+                        config.CAPTCHA_USERID,
+                        config.CAPTCHA_APIKEY,
+                    )
+                    if solved:
+                        log.info(f"✅ تم حل CAPTCHA: {solved}")
+                        captcha_solved = True
+                        await human_delay(4, 6)
+                        await self._send_shot(page, "✅ بعد CAPTCHA")
+                        break
+                    else:
+                        log.warning("⚠️ CAPTCHA ما تحلّتش")
+                        await human_delay(3, 5)
+                else:
+                    log.info("✅ ما كاينش CAPTCHA")
+                    break
+
+            except Exception as e:
+                log.warning(f"فشل فحص CAPTCHA: {e}")
+                await human_delay(2, 3)
+
+        # ============================================
+        # 🆕 ⏳ ننتظر حقل password (max 20s)
+        # ============================================
+        log.info("⏳ ننتظر حقل password...")
+        for wait_attempt in range(10):
+            has_pwd = await page.evaluate("""
+                () => {
+                    for (const inp of document.querySelectorAll('input')) {
+                        if (inp.type === 'password' && inp.offsetParent !== null) return true;
+                    }
+                    return false;
+                }
+            """)
+            if has_pwd:
+                log.info("✅ حقل password ظهر")
+                break
+            await human_delay(2, 3)
 
         # ========== Password ==========
         password_filled = False
@@ -389,11 +425,6 @@ class CloudConsole:
     # ==========================================
 
     async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
-        """
-        يتعامل مع صفحة Welcome/TOS:
-        1. يضغط checkbox (☐ I agree...)
-        2. يضغط زر Agree and continue / I understand / Accept
-        """
         for attempt in range(max_attempts):
             await human_delay(3, 5)
 
