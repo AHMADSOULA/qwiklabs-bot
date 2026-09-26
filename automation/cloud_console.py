@@ -27,37 +27,60 @@ class CloudConsole:
         await human_delay(3, 5)
         await self._send_shot(page, "📸 فتح Cloud Console")
 
-        for step in range(10):
-            log.info(f"═══ خطوة {step + 1}/10 ═══")
+        for step in range(15):
+            log.info(f"═══ خطوة {step + 1}/15 ═══")
             await human_delay(2, 3)
             await take_screenshot(page, f"cc_step_{step}")
             log.info(f"URL: {page.url[:120]}")
 
-            # Console ready?
+            # ✅ 1. Console ready?
             if await self._is_console_ready(page):
                 log.info("✅ Console ready!")
+                await self._send_shot(page, "✅ Console ready")
                 await human_delay(3, 5)
                 return page
 
-            # TOS / Welcome
+            # ✅ 2. TOS / Welcome
             if await self._is_tos(page):
-                log.info("📋 TOS/Welcome")
+                log.info("📋 صفحة TOS")
                 await self._send_shot(page, "📋 TOS")
+
+                url_before = page.url
+
+                # ✅ نضغط على I understand
                 clicked = await self._click_i_understand(page)
                 if clicked:
-                    log.info(f"✅ ضغطنا: {clicked}")
-                    await human_delay(10, 15)
-                    continue
+                    log.info(f"✅ ضغطنا: '{clicked}'")
+                    await self._send_shot(page, f"✅ ضغطنا I understand")
+
+                    # ✅ نستنى 15-20 ثانية
+                    log.info("⏳ ننتظر 15s باش Google تسجل...")
+                    await human_delay(15, 20)
+
+                    # ✅ نتحقق واش الصفحة تبدلت
+                    changed = await self._wait_for_url_change(page, url_before, timeout=15)
+                    if changed:
+                        log.info("🎉 الصفحة تبدلت!")
+                        await self._send_shot(page, "🎉 بعد TOS")
+                        await human_delay(5, 8)
+                        continue
+                    else:
+                        log.warning("⚠️ الصفحة ما تبدلتش — نعاود")
+                        await human_delay(5, 8)
+                        continue
                 else:
+                    log.warning("⚠️ ما لقيناش I understand")
                     await human_delay(5, 8)
                     continue
 
-            # CAPTCHA
+            # ✅ 3. CAPTCHA
             try:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 if await has_captcha(page):
                     log.info("🚨 CAPTCHA")
                     await self._send_shot(page, "🚨 CAPTCHA")
+                    if self.captcha_count >= 5:
+                        raise RuntimeError("CAPTCHA متكررة (5 مرات)")
                     solution = await detect_and_solve_captcha(
                         page, user_id=self.user_id, sender=self.sender
                     )
@@ -68,27 +91,32 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"CAPTCHA: {e}")
 
-            # Sign in
+            # ✅ 4. Sign in?
             if await self._is_signin(page):
                 log.info("🔑 Sign in")
                 await self._send_shot(page, "🔑 Sign in")
                 try:
                     result = await self._do_signin(page)
                     if result == "ok":
-                        await human_delay(6, 10)
+                        await self._send_shot(page, "✅ بعد sign in")
+                        await human_delay(8, 12)
+                        continue
+                    else:
+                        log.warning(f"⚠️ sign in: {result}")
+                        await human_delay(5, 8)
                         continue
                 except Exception as e:
                     log.warning(f"signin: {e}")
                 continue
 
-            # Verify
+            # ✅ 5. Verify
             if await self._has_verify(page):
                 raise RuntimeError("🔴 Google كتطلب verify (2FA)")
 
             log.warning(f"❓ صفحة: {page.url[:100]}")
             await human_delay(5, 8)
 
-        raise RuntimeError(f"❌ فشل بعد 10 خطوات\nURL: {page.url[:200]}")
+        raise RuntimeError(f"❌ فشل بعد 15 خطوة\nURL: {page.url[:200]}")
 
     # ==================== Helpers ====================
 
@@ -123,9 +151,10 @@ class CloudConsole:
         return False
 
     async def _click_i_understand(self, page) -> str:
-        """يضغط على I understand — مرة وحدة"""
+        """يضغط على I understand"""
         log.info("🔍 نبحث عن I understand...")
 
+        # نسجل الأزرار
         try:
             buttons = await page.evaluate("""
                 () => {
@@ -134,9 +163,7 @@ class CloudConsole:
                         if (el.offsetParent === null) continue;
                         const t = (el.innerText || el.value || '').trim();
                         const bg = window.getComputedStyle(el).backgroundColor;
-                        if (t && t.length < 100) {
-                            r.push({text: t.substring(0, 80), bg: bg});
-                        }
+                        if (t && t.length < 100) r.push({text: t.substring(0, 80), bg: bg});
                     }
                     return r;
                 }
@@ -150,7 +177,8 @@ class CloudConsole:
             clicked = await page.evaluate("""
                 () => {
                     const keywords = ['i understand', 'understand', 'accept', 'i accept',
-                                      'agree', 'i agree', 'continue', 'got it'];
+                                      'agree', 'i agree', 'continue', 'got it',
+                                      'i accept the terms', 'i agree to'];
                     const all = document.querySelectorAll(
                         'button, a, [role="button"], input[type="submit"], input[type="button"]'
                     );
@@ -160,6 +188,7 @@ class CloudConsole:
                         if (!text || text.length > 100) continue;
                         for (const kw of keywords) {
                             if (text.includes(kw)) {
+                                el.scrollIntoView({block: 'center'});
                                 el.click();
                                 return text.substring(0, 80);
                             }
@@ -177,6 +206,7 @@ class CloudConsole:
         for sel in [
             'button:has-text("I understand")',
             'button:has-text("Accept")',
+            'button:has-text("I agree")',
             'button:has-text("Continue")',
             'button[type="submit"]',
         ]:
@@ -189,6 +219,34 @@ class CloudConsole:
                 continue
 
         return None
+
+    async def _wait_for_url_change(self, page, url_before: str, timeout: int = 15) -> bool:
+        """ينتظر URL يتغير"""
+        log.info(f"⏳ ننتظر URL يتغير...")
+        for i in range(timeout):
+            await asyncio.sleep(1)
+            if page.url != url_before:
+                log.info(f"✅ URL تبدل")
+                return True
+
+            # ✅ نتحققو واش الزر اختفى (يعني TOS راح)
+            try:
+                has_i_understand = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll('button, [role="button"]')) {
+                            if (el.offsetParent === null) continue;
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            if (t.includes('understand') || t === 'accept') return true;
+                        }
+                        return false;
+                    }
+                """)
+                if not has_i_understand:
+                    log.info("✅ الزر اختفى — الصفحة تبدلت")
+                    return True
+            except Exception:
+                pass
+        return False
 
     async def _is_console_ready(self, page) -> bool:
         url = page.url
@@ -220,10 +278,12 @@ class CloudConsole:
             pass
         return False
 
+    # ==================== Sign In ====================
+
     async def _do_signin(self, page) -> str:
         await self._send_shot(page, "📸 قبل sign in")
 
-        # EMAIL
+        # EMAIL — keyboard.type
         email_ok = False
         for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="text"]']:
             try:
@@ -231,19 +291,38 @@ class CloudConsole:
                 if await el.count() == 0 or not await el.is_visible():
                     continue
                 log.info(f"✅ email: {sel}")
+
+                await el.scroll_into_view_if_needed()
                 await el.click()
                 await human_delay(0.5, 1)
-                await el.fill("")
+                await page.keyboard.press("Control+a")
+                await human_delay(0.2, 0.4)
+                await page.keyboard.press("Delete")
                 await human_delay(0.3, 0.5)
-                await el.fill(self.username)
+                await page.keyboard.type(self.username, delay=80)
                 await human_delay(1, 2)
-                if (await el.input_value()).strip():
+
+                val = await el.input_value()
+                if val.strip() and "@" in val:
                     email_ok = True
+                    await self._send_shot(page, f"✅ email")
                     break
-                await el.click()
-                await page.keyboard.type(self.username, delay=60)
+
+                # JS fallback
+                await el.evaluate("""(el, val) => {
+                    el.focus();
+                    el.value = '';
+                    for (const ch of val) {
+                        el.value += ch;
+                        el.dispatchEvent(new KeyboardEvent('keydown', {key: ch, bubbles: true}));
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new KeyboardEvent('keyup', {key: ch, bubbles: true}));
+                    }
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }""", self.username)
                 await human_delay(1, 2)
-                if (await el.input_value()).strip():
+                val = await el.input_value()
+                if val.strip() and "@" in val:
                     email_ok = True
                     break
             except Exception:
@@ -253,7 +332,8 @@ class CloudConsole:
             return "فشل email"
 
         await self._click_next(page, "email")
-        await human_delay(5, 8)
+        await human_delay(6, 10)
+        await self._send_shot(page, "📸 بعد email Next")
 
         # CAPTCHA
         try:
@@ -266,7 +346,8 @@ class CloudConsole:
         except Exception:
             pass
 
-        await human_delay(3, 5)
+        await human_delay(5, 8)
+        await self._send_shot(page, "📸 قبل password")
 
         # PASSWORD
         pwd_ok = False
@@ -276,19 +357,37 @@ class CloudConsole:
                 if await el.count() == 0 or not await el.is_visible():
                     continue
                 log.info(f"✅ pwd: {sel}")
+
+                await el.scroll_into_view_if_needed()
                 await el.click()
                 await human_delay(0.5, 1)
-                await el.fill("")
+                await page.keyboard.press("Control+a")
+                await human_delay(0.2, 0.4)
+                await page.keyboard.press("Delete")
                 await human_delay(0.3, 0.5)
-                await el.fill(self.password)
+                await page.keyboard.type(self.password, delay=80)
                 await human_delay(1, 2)
-                if (await el.input_value()).strip():
+
+                val = await el.input_value()
+                if val.strip():
                     pwd_ok = True
+                    await self._send_shot(page, f"✅ password")
                     break
-                await el.click()
-                await page.keyboard.type(self.password, delay=60)
+
+                await el.evaluate("""(el, val) => {
+                    el.focus();
+                    el.value = '';
+                    for (const ch of val) {
+                        el.value += ch;
+                        el.dispatchEvent(new KeyboardEvent('keydown', {key: ch, bubbles: true}));
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new KeyboardEvent('keyup', {key: ch, bubbles: true}));
+                    }
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }""", self.password)
                 await human_delay(1, 2)
-                if (await el.input_value()).strip():
+                val = await el.input_value()
+                if val.strip():
                     pwd_ok = True
                     break
             except Exception:
@@ -298,7 +397,8 @@ class CloudConsole:
             return "فشل password"
 
         await self._click_next(page, "password")
-        await human_delay(8, 12)
+        await human_delay(10, 15)
+        await self._send_shot(page, "📸 بعد password Next")
         return "ok"
 
     async def _click_next(self, page, step: str):
