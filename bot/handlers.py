@@ -186,8 +186,15 @@ async def run_step2(job_id, username, password, msg, user_id, context):
                 f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...",
                 parse_mode=ParseMode.MARKDOWN,
             )
+
             cc = CloudConsole(page.context)
-            console_page = await cc.login(username, password)
+            # ✅ نمررو user_id + sender
+            console_page = await cc.login(
+                username,
+                password,
+                user_id=user_id,
+                sender=msg,
+            )
 
             await db.update_job(job_id, "done", f"logged_in:{username}")
             await db.clear_session(user_id)
