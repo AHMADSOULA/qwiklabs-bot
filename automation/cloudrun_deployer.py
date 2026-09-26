@@ -101,24 +101,156 @@ class CloudRunDeployer:
 
 
 async def extract_access_token(page) -> str:
-    log.info("استخراج access token...")
-    await page.goto("https://console.cloud.google.com/run", wait_until="domcontentloaded")
-    await asyncio.sleep(3)
+    log.info("🔍 استخراج access token...")
 
-    token = await page.evaluate("""
-        () => {
-            if (window.gapi && window.gapi.auth) {
-                try { const a = window.gapi.auth.getToken(); if (a && a.access_token) return a.access_token; } catch(e){}
-            }
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (k && k.toLowerCase().includes('token')) {
-                    try { const v = JSON.parse(localStorage.getItem(k)); if (v && v.access_token) return v.access_token; } catch(e){}
+    # ✅ 1. نروحو لـ Cloud Console Home
+    try:
+        await page.goto("https://console.cloud.google.com/home/dashboard", wait_until="domcontentloaded")
+        await asyncio.sleep(5)
+    except Exception as e:
+        log.warning(f"goto: {e}")
+
+    # ✅ 2. نجربو 5 طرق
+    for attempt in range(1, 6):
+        log.info(f"🔑 محاولة {attempt}/5")
+        try:
+            token = await page.evaluate("""
+                async () => {
+                    // ✅ 1. من fetch API مباشرة
+                    try {
+                        const res = await fetch(
+                            'https://cloudconsole-pa.clients6.google.com/v3/entityTypes/cloudresourcemanager.googleapis.com%2FProject?parentId=',
+                            {
+                                credentials: 'include',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                            }
+                        );
+                        const auth = res.headers.get('authorization') || res.headers.get('Authorization');
+                        if (auth) {
+                            if (auth.startsWith('Bearer ')) return auth.substring(7);
+                            return auth;
+                        }
+                    } catch(e) {}
+
+                    // ✅ 2. من gapi.client
+                    try {
+                        if (window.gapi && window.gapi.client) {
+                            const token = window.gapi.client.getToken();
+                            if (token && token.access_token) return token.access_token;
+                        }
+                    } catch(e) {}
+
+                    // ✅ 3. من gapi.auth
+                    try {
+                        if (window.gapi && window.gapi.auth) {
+                            const auth = window.gapi.auth.getToken();
+                            if (auth && auth.access_token) return auth.access_token;
+                        }
+                    } catch(e) {}
+
+                    // ✅ 4. من localStorage
+                    try {
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const k = localStorage.key(i);
+                            if (!k) continue;
+                            const kl = k.toLowerCase();
+                            if (kl.includes('token') || kl.includes('auth') || kl.includes('access')) {
+                                try {
+                                    const v = JSON.parse(localStorage.getItem(k));
+                                    if (v && v.access_token) return v.access_token;
+                                    if (v && v.token && typeof v.token === 'string') return v.token;
+                                    if (typeof v === 'string' && v.startsWith('ya29.')) return v;
+                                } catch(e) {
+                                    const raw = localStorage.getItem(k);
+                                    if (raw && raw.startsWith('ya29.')) return raw;
+                                }
+                            }
+                        }
+                    } catch(e) {}
+
+                    // ✅ 5. من sessionStorage
+                    try {
+                        for (let i = 0; i < sessionStorage.length; i++) {
+                            const k = sessionStorage.key(i);
+                            if (!k) continue;
+                            const kl = k.toLowerCase();
+                            if (kl.includes('token') || kl.includes('auth')) {
+                                try {
+                                    const v = JSON.parse(sessionStorage.getItem(k));
+                                    if (v && v.access_token) return v.access_token;
+                                } catch(e) {}
+                            }
+                        }
+                    } catch(e) {}
+
+                    // ✅ 6. من كل الـ storage keys
+                    try {
+                        for (const storage of [localStorage, sessionStorage]) {
+                            for (let i = 0; i < storage.length; i++) {
+                                const k = storage.key(i);
+                                if (!k) continue;
+                                const val = storage.getItem(k);
+                                if (val && val.includes('ya29.')) {
+                                    const m = val.match(/ya29\\.[A-Za-z0-9_\\-]+/);
+                                    if (m) return m[0];
+                                }
+                            }
+                        }
+                    } catch(e) {}
+
+                    return null;
                 }
+            """)
+
+            if token:
+                log.info(f"✅ Token (طول: {len(token)})")
+                return token
+            else:
+                log.warning(f"⚠️ محاولة {attempt} ما لقاوش token")
+                await asyncio.sleep(3)
+        except Exception as e:
+            log.warning(f"محاولة {attempt} فشلت: {e}")
+            await asyncio.sleep(2)
+
+    # ✅ 3. محاولة أخيرة: من صفحة Cloud Run
+    try:
+        log.info("🔑 محاولة أخيرة: من Cloud Run page...")
+        await page.goto("https://console.cloud.google.com/run", wait_until="domcontentloaded")
+        await asyncio.sleep(5)
+
+        token = await page.evaluate("""
+            async () => {
+                try {
+                    const res = await fetch(
+                        'https://run.googleapis.com/v2/projects',
+                        { credentials: 'include' }
+                    );
+                    const auth = res.headers.get('authorization');
+                    if (auth) return auth.replace('Bearer ', '');
+                } catch(e) {}
+
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        if (!k) continue;
+                        const val = localStorage.getItem(k);
+                        if (val && val.includes('ya29.')) {
+                            const m = val.match(/ya29\\.[A-Za-z0-9_\\-]+/);
+                            if (m) return m[0];
+                        }
+                    }
+                } catch(e) {}
+
+                return null;
             }
-            return null;
-        }
-    """)
-    if not token:
-        raise RuntimeError("فشل access token")
-    return token
+        """)
+
+        if token:
+            log.info(f"✅ Token من Cloud Run (طول: {len(token)})")
+            return token
+    except Exception as e:
+        log.warning(f"محاولة أخيرة فشلت: {e}")
+
+    raise RuntimeError("فشل access token — كل الطرق فشلت")
