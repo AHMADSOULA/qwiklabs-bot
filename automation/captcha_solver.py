@@ -1,18 +1,17 @@
 import asyncio
 import aiohttp
 import base64
+import json
 from utils.logger import get_logger
 
 log = get_logger("CaptchaSolver")
 
-# ✅ SCTG API
 SCTG_API_KEY = "Uosbi2t23tLFF7D1ro9yyX1EOJ61ER8I"
 SCTG_SUBMIT = "https://api.sctg.xyz/in.php"
 SCTG_RESULT = "https://api.sctg.xyz/res.php"
 
 
 async def has_captcha(page) -> bool:
-    """يتحقق واش كاين CAPTCHA فـ الصفحة"""
     try:
         return await page.evaluate("""
             () => {
@@ -38,17 +37,14 @@ async def has_captcha(page) -> bool:
         return False
 
 
-async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> str:
-    """
-    يحل CAPTCHA عبر SCTG.xyz API.
-    """
+async def detect_and_solve_captcha(page) -> str:
+    """يحل CAPTCHA عبر SCTG.xyz"""
     if not await has_captcha(page):
         log.info("✅ ما كاينش CAPTCHA")
         return None
 
     log.info("🚨 CAPTCHA مطلوبة!")
 
-    # ✅ نصور الصورة
     captcha_img = None
     for sel in [
         'img[src*="captcha"]',
@@ -72,7 +68,6 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
     await captcha_img.screenshot(path=img_path)
     log.info(f"📸 حفظت: {img_path}")
 
-    # ✅ نحلها عبر SCTG
     solution = await _solve_sctg(img_path)
 
     if not solution:
@@ -81,7 +76,6 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
 
     log.info(f"✅ الحل: {solution}")
 
-    # ✅ نكتب الحل
     for sel in [
         'input[name="ca"]',
         'input[id="ca"]',
@@ -106,7 +100,6 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
             if val.strip():
                 log.info(f"✍️ كتبت: {val}")
 
-                # ✅ نضغط Next
                 for btn_sel in [
                     '#captchaNext',
                     'button:has-text("Next")',
@@ -131,24 +124,16 @@ async def detect_and_solve_captcha(page, userid: str = "", apikey: str = "") -> 
 
 
 async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
-    """
-    يحل CAPTCHA عبر SCTG.xyz API.
-    
-    ✅ يقبل: image path
-    ✅ API: https://api.sctg.xyz/in.php
-    """
+    """يحل عبر SCTG.xyz API"""
     if not SCTG_API_KEY:
-        log.warning("⚠️ ما عنديش SCTG API key")
         return None
 
     try:
-        # ✅ نقرا الصورة
         with open(img_path, "rb") as f:
             image_data = f.read()
         b64 = base64.b64encode(image_data).decode()
         log.info(f"📤 SCTG ({len(image_data)} bytes)...")
 
-        # ✅ نرسلو
         payload = {
             "key": SCTG_API_KEY,
             "method": "post",
@@ -158,7 +143,6 @@ async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
         }
 
         async with aiohttp.ClientSession() as session:
-            # 1. Submit
             async with session.post(
                 SCTG_SUBMIT,
                 data=payload,
@@ -168,11 +152,10 @@ async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
                 log.info(f"📥 SCTG submit: {text[:300]}")
 
                 if resp.status != 200:
-                    log.error(f"فشل HTTP {resp.status}")
                     return None
 
                 try:
-                    data = __import__("json").loads(text)
+                    data = json.loads(text)
                 except Exception:
                     return None
 
@@ -186,7 +169,6 @@ async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
 
                 log.info(f"✅ SCTG ID: {captcha_id}")
 
-            # 2. Poll result
             for i in range(30):
                 await asyncio.sleep(5)
                 try:
@@ -201,13 +183,8 @@ async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
                         timeout=aiohttp.ClientTimeout(total=30),
                     ) as resp:
                         text = await resp.text()
-                        log.info(f"📥 SCTG result {i+1}: {text[:200]}")
-
-                        if resp.status != 200:
-                            continue
-
                         try:
-                            data = __import__("json").loads(text)
+                            data = json.loads(text)
                         except Exception:
                             continue
 
@@ -218,24 +195,17 @@ async def _solve_sctg(img_path: str, numeric: int = 0) -> str:
                         elif data.get("request") == "CAPCHA_NOT_READY":
                             continue
                         else:
-                            log.error(f"فشل: {data}")
                             return None
-                except Exception as e:
-                    log.warning(f"فشل poll {i+1}: {e}")
+                except Exception:
                     continue
 
-            log.error("⏰ Timeout")
             return None
 
-    except asyncio.TimeoutError:
-        log.error("⏰ Timeout")
-        return None
     except Exception as e:
         log.error(f"فشل SCTG: {e}")
         return None
 
 
-# ✅ متغيرات للتوافق
 def set_captcha_solution(user_id: int, solution: str) -> bool:
     return False
 
