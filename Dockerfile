@@ -16,6 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data /app/logs /app/data/screenshots /app/data/diagnostics
+RUN mkdir -p /app/data /app/logs /app/data/screenshots
 
 CMD ["python", "main.py"]
