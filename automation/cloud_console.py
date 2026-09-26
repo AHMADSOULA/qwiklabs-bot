@@ -25,7 +25,6 @@ class CloudConsole:
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
         await self._send_shot(page, "📸 فتح Cloud Console")
-        log.info(f"URL بعد الفتح: {page.url}")
 
         try:
             for attempt in range(3):
@@ -33,42 +32,34 @@ class CloudConsole:
                 await self._wait_for_login_or_console(page)
 
                 if await self._has_wrong_password_error(page):
-                    log.warning("⚠️ كلمة السر غلط!")
                     await self._send_shot(page, "❌ كلمة سر غلط")
-                    raise RuntimeError("❌ كلمة السر غير صحيحة.\nجدد الرابط من Skills.")
+                    raise RuntimeError("❌ كلمة السر غير صحيحة.")
 
                 if await self._has_verify_required(page):
-                    log.warning("⚠️ Google كتطلب verify phone/email")
                     await self._send_shot(page, "⚠️ Verify مطلوب")
                     raise RuntimeError("❌ Google كتطلب التحقق من الهاتف.")
 
                 if await self._is_signin_page(page):
-                    log.info(f"🔑 صفحة Sign in (محاولة {attempt + 1})")
                     await self._send_shot(page, "📸 صفحة Sign in")
                     await self._do_signin(page, self.username, self.password)
                     await human_delay(5, 7)
 
-                # Welcome / TOS
                 await self._handle_welcome_page(page)
                 await human_delay(4, 6)
 
                 if await self._is_console_ready(page):
-                    log.info(f"✅ وصلنا للـ Console")
                     await self._send_shot(page, "✅ دخل Google Cloud")
                     break
 
                 await human_delay(3, 5)
 
             await self._wait_for_console(page, timeout=30000)
-            log.info(f"✅ URL النهائي: {page.url}")
             return page
 
         except Exception as e:
             log.error(f"فشل تسجيل الدخول: {e}")
             await self._send_shot(page, "❌ فشل")
             raise
-
-    # ==================== Screenshot Helper ====================
 
     async def _send_shot(self, page, caption: str = ""):
         try:
@@ -80,18 +71,11 @@ class CloudConsole:
             if self.sender:
                 try:
                     with open(shot, "rb") as f:
-                        await self.sender.reply_photo(
-                            photo=InputFile(f),
-                            caption=caption[:1000]
-                        )
-                except Exception as e:
-                    log.warning(f"فشل إرسال الصورة: {e}")
-        except Exception as e:
-            log.warning(f"_send_shot: {e}")
-
-    # ==========================================
-    # 🔍 دوال الفحص
-    # ==========================================
+                        await self.sender.reply_photo(photo=InputFile(f), caption=caption[:1000])
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     async def _has_wrong_password_error(self, page) -> bool:
         try:
@@ -139,7 +123,7 @@ class CloudConsole:
                 timeout=timeout,
             )
         except Exception:
-            log.warning("Timeout فـ انتظار الصفحة")
+            pass
         await human_delay(2, 3)
 
     async def _is_signin_page(self, page) -> bool:
@@ -148,12 +132,7 @@ class CloudConsole:
             return True
         if "signin" in url.lower():
             return True
-        for sel in [
-            'input[type="email"]',
-            'input[type="text"][name="identifier"]',
-            'input[name="identifier"]',
-            'input[type="password"]',
-        ]:
+        for sel in ['input[type="email"]', 'input[type="text"][name="identifier"]', 'input[name="identifier"]', 'input[type="password"]']:
             try:
                 if await page.locator(sel).count() > 0:
                     return True
@@ -161,12 +140,8 @@ class CloudConsole:
                 pass
         return False
 
-    # ==========================================
-    # 🔐 تسجيل الدخول
-    # ==========================================
-
     async def _do_signin(self, page, username: str, password: str):
-        # ========== Email ==========
+        # Email
         email_filled = False
         for sel in [
             'input[type="email"]',
@@ -179,7 +154,6 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ حقل الإيميل: {sel}")
                 await el.click()
                 await human_delay(0.5, 1.0)
                 await el.fill("")
@@ -189,23 +163,17 @@ class CloudConsole:
 
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ طريقة 1 نجحت")
                     email_filled = True
                     break
 
-                log.warning("fill ما خدمش — نجرب type")
                 await el.click()
-                await human_delay(0.3, 0.5)
-                await page.keyboard.type(username, delay=50)
-                await human_delay(0.3, 0.8)
-
+                await page.keyboard.type(username, delay=80)
+                await human_delay(0.5, 1.0)
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ طريقة 2 نجحت")
                     email_filled = True
                     break
-            except Exception as e:
-                log.warning(f"فشل مع {sel}: {e}")
+            except Exception:
                 continue
 
         if not email_filled:
@@ -215,93 +183,57 @@ class CloudConsole:
         await self._click_next(page, "email")
         await human_delay(3, 5)
 
-        # ============================================
-        # 🔍 CAPTCHA — فحص متعدد (5 محاولات)
-        # ============================================
-        for captcha_attempt in range(5):
-            log.info(f"🔍 فحص CAPTCHA ({captcha_attempt + 1}/5)...")
+        # CAPTCHA
+        for i in range(5):
             await human_delay(3, 5)
-
             try:
                 from automation.captcha_solver import has_captcha, detect_and_solve_captcha
                 from config import config
-
                 if await has_captcha(page):
-                    log.info("🚨 CAPTCHA مطلوبة!")
                     await self._send_shot(page, "🚨 CAPTCHA")
-
-                    solved = await detect_and_solve_captcha(
-                        page,
-                        config.CAPTCHA_USERID,
-                        config.CAPTCHA_APIKEY,
-                    )
+                    solved = await detect_and_solve_captcha(page, config.CAPTCHA_USERID, config.CAPTCHA_APIKEY)
                     if solved:
-                        log.info(f"✅ تم حل CAPTCHA: {solved}")
-                        await human_delay(4, 6)
                         break
-                    else:
-                        log.warning("⚠️ CAPTCHA ما تحلّتش")
-                        await human_delay(3, 5)
+                    await human_delay(3, 5)
                 else:
-                    log.info("✅ ما كاينش CAPTCHA")
                     break
+            except Exception:
+                pass
 
-            except Exception as e:
-                log.warning(f"فشل فحص CAPTCHA: {e}")
-                await human_delay(2, 3)
-
-        # ============================================
-        # ⏳ ننتظر حقل password (بلا page.evaluate)
-        # ============================================
-        log.info("⏳ ننتظر حقل password...")
-        for wait_attempt in range(10):
+        # انتظار password
+        for i in range(10):
             try:
-                pwd = page.locator('input[type="password"]').first
-                if await pwd.count() > 0:
-                    log.info("✅ حقل password ظهر")
+                if await page.locator('input[type="password"]').count() > 0:
                     break
             except Exception:
                 pass
             await human_delay(2, 3)
 
-        # ========== Password ==========
+        # Password
         password_filled = False
-        for sel in [
-            'input[type="password"]',
-            'input[name="password"]',
-            'input[autocomplete="current-password"]',
-        ]:
+        for sel in ['input[type="password"]', 'input[name="password"]']:
             try:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ حقل كلمة السر: {sel}")
                 await el.click()
                 await human_delay(0.5, 1.0)
                 await el.fill("")
                 await human_delay(0.2, 0.5)
                 await el.fill(password)
                 await human_delay(0.3, 0.8)
-
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ كلمة السر (طريقة 1)")
                     password_filled = True
                     break
-
-                log.warning("fill ما خدمش — type")
                 await el.click()
-                await human_delay(0.3, 0.5)
-                await page.keyboard.type(password, delay=50)
-                await human_delay(0.3, 0.8)
-
+                await page.keyboard.type(password, delay=80)
+                await human_delay(0.5, 1.0)
                 val = await el.input_value()
                 if val.strip():
-                    log.info(f"✅ كلمة السر (طريقة 2)")
                     password_filled = True
                     break
-            except Exception as e:
-                log.warning(f"فشل كلمة السر مع {sel}: {e}")
+            except Exception:
                 continue
 
         if not password_filled:
@@ -311,37 +243,22 @@ class CloudConsole:
         await self._click_next(page, "password")
         await human_delay(4, 7)
 
-        log.info("✅ تم إدخال email + password")
-
     async def _click_next(self, page, step: str):
-        for sel in [
-            '#identifierNext',
-            '#passwordNext',
-            '#captchaNext',
-            'button:has-text("Next")',
-            'button:has-text("التالي")',
-            'div[role="button"]:has-text("Next")',
-            'button[type="submit"]',
-        ]:
+        for sel in ['#identifierNext', '#passwordNext', '#captchaNext', 'button:has-text("Next")', 'button[type="submit"]']:
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
-                    log.info(f"كليك على {sel} ({step})")
                     await el.click()
                     return
             except Exception:
                 continue
 
-    # ==========================================
-    # ✅ Welcome / TOS — Playwright مباشرة
-    # ==========================================
-
     async def _handle_welcome_page(self, page, max_attempts: int = 3) -> bool:
+        """بلا page.evaluate — Playwright مباشرة"""
         for attempt in range(max_attempts):
-            log.info(f"🔍 Welcome/TOS محاولة {attempt + 1}")
             await human_delay(3, 5)
 
-            # ✅ 1. Checkbox
+            # Checkbox
             try:
                 cb = page.locator('input[type="checkbox"]').first
                 if await cb.count() > 0:
@@ -349,25 +266,19 @@ class CloudConsole:
                         is_checked = await cb.is_checked()
                     except Exception:
                         is_checked = False
-
                     if not is_checked:
-                        log.info("📋 نضغط على checkbox...")
                         try:
                             await cb.check(timeout=5000)
-                            log.info("✅ Checkbox checked")
                         except Exception:
                             try:
                                 await cb.click(force=True)
-                                log.info("✅ Checkbox clicked")
-                            except Exception as e:
-                                log.warning(f"checkbox: {e}")
+                            except Exception:
+                                pass
                         await human_delay(1, 2)
-                    else:
-                        log.info("✅ Checkbox already checked")
-            except Exception as e:
-                log.warning(f"checkbox: {e}")
+            except Exception:
+                pass
 
-            # ✅ 2. زر Agree
+            # زر Agree
             for sel in [
                 'button:has-text("Agree and continue")',
                 'button:has-text("I understand")',
@@ -375,48 +286,24 @@ class CloudConsole:
                 'button:has-text("Accept")',
                 'button:has-text("Agree")',
                 'button:has-text("Continue")',
-                'button:has-text("Got it")',
             ]:
                 try:
                     el = page.locator(sel).first
                     if await el.count() > 0 and await el.is_visible():
-                        log.info(f"✅ لقيت: {sel}")
                         try:
                             await el.click(timeout=5000)
                         except Exception:
                             await el.click(force=True)
-                        log.info(f"✅ ضغطنا: {sel}")
                         await human_delay(5, 8)
                         return True
                 except Exception:
                     continue
 
-            # ✅ 3. الزر الأزرق
-            try:
-                for blue_sel in [
-                    'button[style*="rgb(26, 115"]',
-                    'button[style*="rgb(11, 87"]',
-                    'button[style*="rgb(66, 133"]',
-                ]:
-                    blue = page.locator(blue_sel).first
-                    if await blue.count() > 0 and await blue.is_visible():
-                        log.info(f"✅ Blue button: {blue_sel}")
-                        await blue.click()
-                        await human_delay(5, 8)
-                        return True
-            except Exception:
-                pass
-
             await human_delay(3, 5)
 
         return False
 
-    # ==========================================
-    # ✅ انتظار Console
-    # ==========================================
-
     async def _wait_for_console(self, page, timeout: int = 30000):
-        log.info("انتظار تحميل Cloud Console...")
         try:
             await page.wait_for_function(
                 """() => {
@@ -428,14 +315,11 @@ class CloudConsole:
                 timeout=timeout,
             )
         except Exception:
-            log.warning("Timeout فـ انتظار Console")
-
+            pass
         await human_delay(5, 8)
-
         try:
             import time
             path = f"/app/data/screenshots/{int(time.time())}_cc_ready.png"
             await page.screenshot(path=path, full_page=False, timeout=10000)
-            log.info(f"📸 {path}")
-        except Exception as e:
-            log.warning(f"فشل screenshot: {e}")
+        except Exception:
+            pass
