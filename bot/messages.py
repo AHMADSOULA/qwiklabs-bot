@@ -3,16 +3,11 @@ WELCOME = """
 
 📌 *طريقة الاستعمال:*
 1. افتح Google Skills واختر Lab
-2. انسخ رابط SSO
+2. انسخ رابط SSO (skills.google/google_sso)
 3. أرسل الرابط هنا
 4. البوت سيدخل تلقائياً
-5. ينشر على Cloud Run
 
-⚙️ *الإعدادات:*
-🐳 `docker.io/ajndjd2/ahmed-vip1`
-📦 `ahmed-vip1`
-🌍 `us-central1`
-💾 `2Gi` | ⚙️ `2vCPU`
+⚠️ الرابط صالح 5 ساعات فقط.
 """
 
 PROCESSING = "⏳ جاري المعالجة..."
