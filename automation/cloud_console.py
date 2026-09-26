@@ -46,38 +46,32 @@ class CloudConsole:
                 log.info("📋 صفحة TOS/Welcome")
                 await self._send_shot(page, "📋 صفحة Terms of Service")
 
-                # ✅ نضغط "I understand" مرة وحدة فقط
                 log.info("🖱️ نضغط على 'I understand' مرة وحدة...")
                 clicked = await self._click_i_understand_once(page)
 
                 if not clicked:
-                    # ❌ ما لقيناش الزر → نحبس
                     await self._raise_problem(
                         page,
-                        "🔴 ما لقيناش زر 'I understand'",
-                        "الصفحة فيها TOS ولكن ما لقيناش زر 'I understand'"
+                        "🔴 ما لقيناش زر I understand",
+                        "الصفحة فيها TOS ولكن ما لقيناش زر I understand"
                     )
 
                 log.info(f"✅ ضغطنا على: '{clicked}' — ننتظر 15 ثانية...")
                 await self._send_shot(page, f"✅ ضغطنا: {clicked}")
 
-                # ✅ ننتظر 15 ثانية باش Google تسجل
                 await human_delay(15, 18)
 
-                # ✅ نتحقق واش دخلنا
                 if await self._is_console_ready(page):
                     log.info("🎉 دخلنا لـ Google Cloud!")
                     await self._send_shot(page, "🎉 دخل لـ Google Cloud")
                     await human_delay(3, 5)
                     return page
 
-                # ❌ ما دخلش → نحبس ونرسل Logs
-                log.error("❌ ما دخلناش لـ Google Cloud بعد الضغط")
+                log.error("❌ ما دخلناش لـ Google Cloud")
                 await self._raise_problem(
                     page,
-                    "🔴 فشل الدخول بعد الضغط على 'I understand'",
-                    f"ضغطنا على الزر '{clicked}' ولكن Google ما سجلتش. "
-                    f"URL الحالي: {page.url[:150]}"
+                    "🔴 فشل بعد الضغط على I understand",
+                    f"ضغطنا على '{clicked}' ولكن Google ما سجلتش. URL: {page.url[:150]}"
                 )
 
             # ✅ 3. CAPTCHA
@@ -129,22 +123,13 @@ class CloudConsole:
             log.warning(f"❓ صفحة: {current_url[:100]}")
             await human_delay(5, 8)
 
-        # ❌ انتهت 12 خطوة
-        await self._raise_problem(
-            page,
-            "🔴 فشل بعد 12 خطوة",
-            f"URL: {page.url[:200]}"
-        )
+        await self._raise_problem(page, "🔴 فشل بعد 12 خطوة", f"URL: {page.url[:200]}")
 
     # ==================== Click I Understand (مرة وحدة) ====================
 
     async def _click_i_understand_once(self, page) -> str:
-        """
-        يضغط على "I understand" مرة وحدة فقط.
-        """
-        log.info("🔍 نبحث عن زر 'I understand'...")
+        log.info("🔍 نبحث عن زر I understand...")
 
-        # ✅ نسجل الأزرار
         try:
             buttons = await page.evaluate("""
                 () => {
@@ -164,19 +149,12 @@ class CloudConsole:
         except Exception:
             pass
 
-        # ✅ JS evaluate + el.click() — مرة وحدة
         try:
             clicked = await page.evaluate("""
                 () => {
-                    const keywords = [
-                        'i understand', 'understand',
-                        'accept', 'i accept',
-                        'agree', 'i agree',
-                        'confirm', 'got it',
-                        'continue',
-                        'understood',
-                        'قبول', 'موافق', 'أفهم'
-                    ];
+                    const keywords = ['i understand', 'understand', 'accept', 'i accept',
+                                      'agree', 'i agree', 'confirm', 'got it', 'continue',
+                                      'understood', 'قبول', 'موافق', 'أفهم'];
                     const all = document.querySelectorAll(
                         'button, a, [role="button"], input[type="submit"], input[type="button"]'
                     );
@@ -201,7 +179,6 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"JS: {e}")
 
-        # ✅ الزر الأزرق (11, 87, 208)
         try:
             clicked = await page.evaluate("""
                 () => {
@@ -261,9 +238,8 @@ class CloudConsole:
         يتوقف + يرسل Logs كاملة + Screenshot.
         """
         log.error(f"❌ {title}: {details}")
-        await self._send_shot(page, f"❌ {title}")
+        await self._send_shot(page, f"❌ {title[:50]}")
 
-        # ✅ نجمع المعلومات
         info = {}
         try:
             info = await page.evaluate("""
@@ -303,17 +279,182 @@ class CloudConsole:
         except Exception as e:
             info = {"error": str(e)}
 
-        # ✅ نبني رسالة Logs كاملة
-        msg = f"""{title}
+        # ✅ نبني الرسالة بأجزاء (بلا f-string multi-line معقدة)
+        parts = []
+        parts.append(title)
+        parts.append("")
+        parts.append("📋 *التفاصيل:*")
+        parts.append(str(details))
+        parts.append("")
+        parts.append("━━━━━━━━━━━━━━━━")
+        parts.append("🔗 *URL:*")
+        parts.append("`" + str(info.get("url", "N/A"))[:200] + "`")
+        parts.append("")
+        parts.append("📄 *عنوان الصفحة:*")
+        parts.append("`" + str(info.get("title", "N/A"))[:100] + "`")
+        parts.append("")
+        parts.append("📝 *نص الصفحة:*")
+        parts.append("```")
+        parts.append(str(info.get("text", ""))[:500])
+        parts.append("```")
+        parts.append("")
+        parts.append("🔘 *الأزرار:*")
 
-📋 *التفاصيل:*
-{details}
+        for b in info.get("buttons", [])[:15]:
+            txt = b.get("text", "")[:50]
+            bg = b.get("bg", "")
+            parts.append(f"  • `{txt}` — bg: `{bg}`")
 
-━━━━━━━━━━━━━━━━
-🔗 *URL:*
-`{info.get('url', 'N/A')}`
+        parts.append("")
+        parts.append("📝 *Inputs:*")
+        for i in info.get("inputs", [])[:10]:
+            parts.append(f"  • type=`{i.get('type', '')}` name=`{i.get('name', '')}` id=`{i.get('id', '')}`")
 
-📄 *عنوان الصفحة:*
-`{info.get('title', 'N/A')}`
+        parts.append("")
+        parts.append("☑️ *Checkboxes:*")
+        for c in info.get("checkboxes", [])[:5]:
+            parts.append(f"  • name=`{c.get('name', '')}` checked=`{c.get('checked', '')}`")
 
-📝 *نص الصفحة:*
+        parts.append("")
+        parts.append(f"🖼️ *Images:* {info.get('images', [])}")
+        parts.append(f"🖼️ *iframes:* {info.get('iframes', 0)}")
+
+        msg = "\n".join(parts)
+
+        # ✅ نرسل للمستخدم
+        if self.sender:
+            try:
+                await self.sender.reply_text(msg[:4000], parse_mode="Markdown")
+            except Exception:
+                try:
+                    await self.sender.reply_text(msg[:4000])
+                except Exception:
+                    pass
+
+        raise RuntimeError(f"{title}\n{details}")
+
+    async def _is_console_ready(self, page) -> bool:
+        url = page.url
+        if "console.cloud.google.com" not in url:
+            return False
+        if "signin" in url.lower() or "accounts.google.com" in url:
+            return False
+        return True
+
+    async def _is_signin(self, page) -> bool:
+        url = page.url.lower()
+        if "accounts.google.com" in url and "workspaceterms" not in url and "speedbump" not in url:
+            return True
+        for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="password"]']:
+            try:
+                if await page.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    async def _has_verify(self, page) -> bool:
+        try:
+            c = (await page.content()).lower()
+            for txt in ['verify it', 'verify your', 'enter the code', '2-step']:
+                if txt in c:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    async def _has_wrong_password(self, page) -> bool:
+        try:
+            c = (await page.content()).lower()
+            return 'incorrect password' in c or 'wrong password' in c
+        except Exception:
+            return False
+
+    async def _do_signin(self, page) -> str:
+        await self._send_shot(page, "📸 قبل sign in")
+
+        email_ok = False
+        for sel in ['input[type="email"]', 'input[name="identifier"]', 'input[type="text"]']:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0 or not await el.is_visible():
+                    continue
+                log.info(f"✅ email: {sel}")
+                await el.click()
+                await human_delay(0.5, 1)
+                await el.fill("")
+                await human_delay(0.3, 0.5)
+                await el.fill(self.username)
+                await human_delay(1, 2)
+                if (await el.input_value()).strip():
+                    email_ok = True
+                    break
+                await el.click()
+                await page.keyboard.type(self.username, delay=60)
+                await human_delay(1, 2)
+                if (await el.input_value()).strip():
+                    email_ok = True
+                    break
+            except Exception:
+                continue
+
+        if not email_ok:
+            return "ما قدرناش نكتب email"
+
+        await self._click_next(page, "email")
+        await human_delay(5, 8)
+
+        try:
+            from automation.captcha_solver import has_captcha, detect_and_solve_captcha
+            if await has_captcha(page):
+                solution = await detect_and_solve_captcha(page, user_id=self.user_id, sender=self.sender)
+                if solution:
+                    self.captcha_count += 1
+                    await human_delay(5, 8)
+        except Exception:
+            pass
+
+        await human_delay(3, 5)
+
+        pwd_ok = False
+        for sel in ['input[type="password"]', 'input[name="password"]']:
+            try:
+                el = page.locator(sel).first
+                if await el.count() == 0 or not await el.is_visible():
+                    continue
+                log.info(f"✅ pwd: {sel}")
+                await el.click()
+                await human_delay(0.5, 1)
+                await el.fill("")
+                await human_delay(0.3, 0.5)
+                await el.fill(self.password)
+                await human_delay(1, 2)
+                if (await el.input_value()).strip():
+                    pwd_ok = True
+                    break
+                await el.click()
+                await page.keyboard.type(self.password, delay=60)
+                await human_delay(1, 2)
+                if (await el.input_value()).strip():
+                    pwd_ok = True
+                    break
+            except Exception:
+                continue
+
+        if not pwd_ok:
+            return "ما لقيناش password"
+
+        await self._click_next(page, "password")
+        await human_delay(8, 12)
+        return "ok"
+
+    async def _click_next(self, page, step: str):
+        for sel in ['#identifierNext', '#passwordNext', '#captchaNext',
+                    'button:has-text("Next")', 'button[type="submit"]']:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    await el.click()
+                    return
+            except Exception:
+                continue
