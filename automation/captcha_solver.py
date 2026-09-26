@@ -142,4 +142,38 @@ async def _solve_manual(user_id: int, sender, img_path: str) -> str:
     if not os.path.exists(img_path):
         return None
 
-    PENDING_CAPTCHA[user_id] = {"solution": None, "waiting
+    PENDING_CAPTCHA[user_id] = {"solution": None, "waiting": True}
+
+    with open(img_path, "rb") as f:
+        await sender.reply_photo(
+            photo=InputFile(f),
+            caption="🚨 *CAPTCHA*\n\n📝 اكتب الحل هنا\n⏱️ عندك 5 دقائق\n❌ /cancel",
+            parse_mode="Markdown",
+        )
+
+    for i in range(60):
+        await asyncio.sleep(5)
+        data = PENDING_CAPTCHA.get(user_id, {})
+        if data.get("solution"):
+            sol = data["solution"]
+            PENDING_CAPTCHA.pop(user_id, None)
+            return sol
+        if not data.get("waiting"):
+            PENDING_CAPTCHA.pop(user_id, None)
+            return None
+
+    PENDING_CAPTCHA.pop(user_id, None)
+    return None
+
+
+def set_captcha_solution(user_id: int, solution: str) -> bool:
+    if user_id in PENDING_CAPTCHA:
+        PENDING_CAPTCHA[user_id]["solution"] = solution.strip()
+        PENDING_CAPTCHA[user_id]["waiting"] = False
+        return True
+    return False
+
+
+def cancel_captcha(user_id: int):
+    if user_id in PENDING_CAPTCHA:
+        PENDING_CAPTCHA[user_id]["waiting"] = False
