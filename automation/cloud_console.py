@@ -72,7 +72,15 @@ class CloudConsole:
                     if clicked:
                         log.info(f"✅ تم الضغط على: {clicked}")
                         await self._shot(page, "✅ تم قبول الشروط")
-                        await human_delay(10, 15)
+                        # ✅ نستناو حتى TOS تختفي
+                        for _ in range(15):
+                            await human_delay(2, 2)
+                            if await self._is_tos_gone(page):
+                                log.info("✅ TOS اختفت!")
+                                break
+                        else:
+                            log.warning("⚠️ TOS ما اختفتش — نكملو بالقوة")
+                        await human_delay(5, 8)
                     else:
                         await self._shot(page, "❌ لم نجد الزر")
                         await self._send_report(page, "❌ لم نجد زر Accept في صفحة Welcome")
@@ -315,67 +323,110 @@ class CloudConsole:
 
         return "project=" in url or "/home/" in url
 
-    # ==================== الضغط على الزر الأزرق (5 طرق) ====================
+    # ==================== الضغط على الزر الأزرق (mouse حقيقي) ====================
 
     async def _click_blue_button(self, page) -> str:
-        """يضغط على الزر الأزرق — 5 طرق (آخرها batchexecute)"""
+        """يضغط على الزر الأزرق باستعمال mouse حقيقي + keyboard fallback"""
         log.info("🔍 نبحث عن الزر الأزرق...")
 
-        # ✅ نسجل الأزرار
-        try:
-            buttons = await page.evaluate("""
-                () => {
-                    const r = [];
-                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
-                        if (el.offsetParent === null) continue;
-                        const rect = el.getBoundingClientRect();
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        const t = (el.innerText || el.value || '').trim();
-                        if (t && t.length < 100) {
-                            r.push({
-                                text: t.substring(0, 80),
-                                bg: bg,
+        # ✅ 1. نلقاو الزر
+        target = await page.evaluate("""
+            () => {
+                const kws = ['i understand', 'agree and continue', 'accept'];
+                for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
+                    if (el.offsetParent === null || el.disabled) continue;
+                    const t = (el.innerText || el.value || '').trim().toLowerCase();
+                    for (const kw of kws) {
+                        if (t.includes(kw)) {
+                            const rect = el.getBoundingClientRect();
+                            const bg = window.getComputedStyle(el).backgroundColor;
+                            return {
+                                text: (el.innerText || el.value || '').trim(),
                                 x: Math.round(rect.x + rect.width / 2),
                                 y: Math.round(rect.y + rect.height / 2),
-                                disabled: el.disabled || false,
-                            });
+                                w: Math.round(rect.width),
+                                h: Math.round(rect.height),
+                                bg: bg,
+                            };
                         }
                     }
-                    return r;
                 }
-            """)
-            log.info(f"📋 الأزرار: {buttons}")
-        except Exception as e:
-            log.warning(f"فشل: {e}")
-            buttons = []
+                return null;
+            }
+        """)
 
-        # ✅ نلقاو الزر
-        target_text = None
-        for b in buttons:
-            txt = (b.get("text") or "").lower()
-            if "i understand" in txt or "agree and continue" in txt or "accept" in txt:
-                target_text = b.get("text")
-                break
-
-        if not target_text:
-            for b in buttons:
-                bg = b.get("bg", "")
-                if "11, 87" in bg or "26, 115" in bg or "66, 133" in bg:
-                    target_text = b.get("text")
-                    break
-
-        if not target_text:
-            log.warning("⚠️ ما لقيناش زر")
+        if not target:
+            log.warning("⚠️ ما لقيناش زر بالـ JS")
             return None
 
-        log.info(f"🎯 الزر: '{target_text}'")
+        log.info(f"🎯 الزر: '{target['text']}' @({target['x']},{target['y']}) size={target['w']}x{target['h']} bg={target['bg']}")
 
         # ============================================
-        # ✅ الطريقة 1: Playwright locator
+        # ✅ الطريقة 1: mouse حقيقي (الأقوى)
         # ============================================
-        log.info("🖱️ الطريقة 1: Playwright")
+        log.info("🖱️ الطريقة 1: mouse حقيقي")
+        try:
+            await page.evaluate(f"""
+                () => {{
+                    const el = document.elementFromPoint({target['x']}, {target['y']});
+                    if (el) el.scrollIntoView({{block: 'center', behavior: 'instant'}});
+                }}
+            """)
+            await human_delay(0.5, 1)
+
+            # نعاودو نحسبو الكوردينيات بعد الـ scroll
+            target2 = await page.evaluate("""
+                () => {
+                    const kws = ['i understand', 'agree and continue', 'accept'];
+                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        for (const kw of kws) {
+                            if (t.includes(kw)) {
+                                const rect = el.getBoundingClientRect();
+                                return {
+                                    x: Math.round(rect.x + rect.width / 2),
+                                    y: Math.round(rect.y + rect.height / 2),
+                                };
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if target2:
+                target['x'] = target2['x']
+                target['y'] = target2['y']
+
+            # ✅ حركة إنسانية
+            await page.mouse.move(target['x'] - 150, target['y'] - 80, steps=12)
+            await human_delay(0.2, 0.4)
+            await page.mouse.move(target['x'] - 50, target['y'] - 20, steps=10)
+            await human_delay(0.2, 0.4)
+            await page.mouse.move(target['x'], target['y'], steps=8)
+            await human_delay(0.4, 0.7)
+            await page.mouse.move(target['x'], target['y'] + 1, steps=3)
+            await human_delay(0.2, 0.4)
+
+            # ✅ ضغطة حقيقية
+            await page.mouse.down()
+            await human_delay(0.08, 0.15)
+            await page.mouse.up()
+            log.info("✅ mouse click تنفذ")
+            await human_delay(3, 5)
+
+            if await self._is_tos_gone(page):
+                log.info("✅ TOS تبدلت بـ mouse!")
+                return target['text']
+            log.warning("⚠️ mouse ما خدمش، نجربو طرق أخرى")
+        except Exception as e:
+            log.warning(f"mouse: {e}")
+
+        # ============================================
+        # ✅ الطريقة 2: Playwright force
+        # ============================================
+        log.info("🖱️ الطريقة 2: Playwright force")
         for sel in [
-            f'button:has-text("{target_text}")',
             'button:has-text("I understand")',
             'button:has-text("Agree and continue")',
             'button:has-text("Accept")',
@@ -384,62 +435,58 @@ class CloudConsole:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
                     await el.scroll_into_view_if_needed()
-                    await human_delay(0.3, 0.5)
-                    log.info(f"✅ لقينا: {sel}")
-                    await el.click(timeout=5000)
-                    log.info("✅ click نجح")
-                    await human_delay(2, 3)
-                    if await self._is_tos_gone(page):
-                        log.info("✅ TOS تبدلت!")
-                        return target_text
-                    log.warning("⚠️ TOS ما تبدلتش — نجربو طرق أخرى")
-            except Exception as e:
-                log.warning(f"فشل {sel}: {e}")
-                continue
-
-        # ============================================
-        # ✅ الطريقة 2: force click
-        # ============================================
-        log.info("🖱️ الطريقة 2: force")
-        try:
-            for sel in ['button:has-text("I understand")', 'button:has-text("Agree and continue")']:
-                el = page.locator(sel).first
-                if await el.count() > 0:
+                    await human_delay(0.5, 1)
                     await el.click(force=True, timeout=5000)
                     log.info(f"✅ force: {sel}")
-                    await human_delay(2, 3)
+                    await human_delay(3, 5)
                     if await self._is_tos_gone(page):
-                        log.info("✅ TOS تبدلت!")
-                        return target_text
-        except Exception as e:
-            log.warning(f"force: {e}")
+                        log.info("✅ TOS تبدلت بـ force!")
+                        return target['text']
+            except Exception as e:
+                log.warning(f"force {sel}: {e}")
 
         # ============================================
-        # ✅ الطريقة 3: JS click + dispatch events
+        # ✅ الطريقة 3: keyboard (Tab + Enter)
         # ============================================
-        log.info("🖱️ الطريقة 3: JS + events")
+        log.info("⌨️ الطريقة 3: keyboard (Tab + Enter)")
+        try:
+            await page.click("body", position={"x": 10, "y": 10})
+            await human_delay(0.3, 0.5)
+            for i in range(30):
+                focused = await page.evaluate("""
+                    () => {
+                        const el = document.activeElement;
+                        if (!el) return {tag: '', text: ''};
+                        return {tag: el.tagName, text: (el.innerText || el.value || '').trim().toLowerCase(), type: el.type || ''};
+                    }
+                """)
+                log.info(f"🔎 focus[{i}]: {focused}")
+                if any(kw in focused.get('text', '') for kw in ['understand', 'agree', 'accept']):
+                    await page.keyboard.press("Enter")
+                    log.info("✅ Enter تنفذ")
+                    await human_delay(3, 5)
+                    if await self._is_tos_gone(page):
+                        log.info("✅ TOS تبدلت بـ keyboard!")
+                        return target['text']
+                    break
+                await page.keyboard.press("Tab")
+                await human_delay(0.15, 0.3)
+        except Exception as e:
+            log.warning(f"keyboard: {e}")
+
+        # ============================================
+        # ✅ الطريقة 4: JS click
+        # ============================================
+        log.info("🖱️ الطريقة 4: JS click")
         try:
             clicked = await page.evaluate("""
                 () => {
-                    const kws = ['i understand', 'agree and continue', 'accept', 'continue'];
+                    const kws = ['i understand', 'agree and continue', 'accept'];
                     for (const el of document.querySelectorAll('button, a, [role="button"]')) {
                         if (el.offsetParent === null || el.disabled) continue;
                         const t = (el.innerText || '').trim().toLowerCase();
-                        if (!t || t.length > 100) continue;
                         for (const kw of kws) {
                             if (t.includes(kw)) {
-                                el.scrollIntoView({block: 'center'});
-                                el.focus();
-                                // ✅ 5 أحداث
-                                const rect = el.getBoundingClientRect();
-                                const cx = rect.x + rect.width / 2;
-                                const cy = rect.y + rect.height / 2;
-                                const opts = {bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0};
-                                el.dispatchEvent(new PointerEvent('pointerdown', opts));
-                                el.dispatchEvent(new MouseEvent('mousedown', opts));
-                                el.dispatchEvent(new PointerEvent('pointerup', opts));
-                                el.dispatchEvent(new MouseEvent('mouseup', opts));
-                                el.dispatchEvent(new MouseEvent('click', opts));
                                 el.click();
                                 return t;
                             }
@@ -450,116 +497,56 @@ class CloudConsole:
             """)
             if clicked:
                 log.info(f"✅ JS: {clicked}")
-                await human_delay(2, 3)
+                await human_delay(3, 5)
                 if await self._is_tos_gone(page):
-                    log.info("✅ TOS تبدلت!")
-                    return target_text
+                    log.info("✅ TOS تبدلت بـ JS!")
+                    return target['text']
         except Exception as e:
             log.warning(f"JS: {e}")
 
-        # ============================================
-        # ✅ الطريقة 4: batchexecute (Google RPC)
-        # ============================================
-        log.info("🖱️ الطريقة 4: batchexecute (Google RPC)")
-        try:
-            result = await self._call_batchexecute(page)
-            if result:
-                log.info(f"✅ batchexecute: {result}")
-                await human_delay(3, 5)
-                if await self._is_tos_gone(page):
-                    log.info("✅ TOS تبدلت بـ batchexecute!")
-                    return target_text
-        except Exception as e:
-            log.warning(f"batchexecute: {e}")
-
-        # ============================================
-        # ✅ الطريقة 5: إعادة تحميل الصفحة
-        # ============================================
-        log.info("🖱️ الطريقة 5: reload")
-        try:
-            await page.reload(wait_until="domcontentloaded")
-            await human_delay(5, 8)
-        except Exception:
-            pass
-
-        return target_text
-
-    # ==================== batchexecute ====================
-
-    async def _call_batchexecute(self, page) -> str:
-        """
-        يستدعي Google batchexecute API مباشرة
-        (نفس الطلبات اللي JS كيرسلهم)
-        """
-        try:
-            # ✅ نستخرجو القيم من الصفحة
-            wiz_data = await page.evaluate("""
-                () => {
-                    const wiz = window.WIZ_global_data || {};
-                    return {
-                        f_sid: wiz.FdrFJe || '',
-                        at: wiz.SNlM0e || '',
-                        bl: wiz.cfb2h || 'boq_identityfrontendauthuiserver_20260920.02_p0',
-                        dsh: wiz.Qzxixc || '',
-                        hl: wiz.GWsdKe || 'ar',
-                    };
-                }
-            """)
-
-            log.info(f"📋 WIZ: {wiz_data}")
-
-            if not wiz_data.get("at"):
-                log.warning("⚠️ ما لقيناش SNlM0e")
-                return None
-
-            # ✅ نستدعيو batchexecute
-            result = await page.evaluate("""
-                async (args) => {
-                    try {
-                        const url = `https://accounts.google.com/v3/signin/_/WorkspaceTermsOfServiceUi/data/batchexecute?rpcids=GVthp&source-path=%2Fv3%2Fsignin%2Fspeedbump%2Fworkspacetermsofservice&f.sid=${args.f_sid}&bl=${args.bl}&hl=${args.hl}&dsh=${args.dsh}&rt=c`;
-
-                        const body = `f.req=${encodeURIComponent(JSON.stringify([[[\"GVthp\",\"[[\\\"\\\"] ]\",null,\"generic\"]]]))}&at=${encodeURIComponent(args.at)}&`;
-
-                        const res = await fetch(url, {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: {
-                                'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
-                                'x-same-domain': '1',
-                            },
-                            body: body,
-                        });
-
-                        const text = await res.text();
-                        return text.substring(0, 500);
-                    } catch(e) {
-                        return 'error: ' + e.message;
-                    }
-                }
-            """, wiz_data)
-
-            log.info(f"📥 batchexecute result: {result}")
-            return result
-
-        except Exception as e:
-            log.warning(f"batchexecute: {e}")
-            return None
+        log.warning("❌ كل الطرق فشلت")
+        return None
 
     # ==================== Check TOS gone ====================
 
     async def _is_tos_gone(self, page) -> bool:
         """يتحقق واش خرجنا من TOS"""
         try:
-            url = page.url.lower()
-            if "workspacetermsofservice" in url or "speedbump" in url:
+            # ✅ 1. إذا الزر مازال ظاهر → مازال فـ TOS
+            still_has_button = await page.evaluate("""
+                () => {
+                    const kws = ['i understand', 'agree and continue'];
+                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                        if (el.offsetParent === null || el.disabled) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        for (const kw of kws) {
+                            if (t.includes(kw)) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.top > 0 && rect.top < window.innerHeight) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if still_has_button:
                 return False
-            if "welcome" in url:
-                # ✅ إذا كان TOS، ما زال
-                text = (await page.inner_text("body")).lower()
-                if "welcome to your new account" in text:
-                    return False
-            return True
-        except Exception:
+
+            # ✅ 2. إذا الـ URL تبدل لـ console
+            url = page.url.lower()
+            if "console.cloud.google.com" in url and "workspacetermsofservice" not in url and "speedbump" not in url:
+                return True
+
+            # ✅ 3. إذا النص اختفى
+            text = (await page.inner_text("body")).lower()
+            if "welcome to your new account" not in text:
+                return True
+
+            return False
+        except Exception as e:
+            log.warning(f"_is_tos_gone: {e}")
             return False
 
     # ==================== خطوات تسجيل الدخول ====================
