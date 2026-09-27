@@ -10,12 +10,16 @@ log = get_logger("CloudConsole")
 
 
 class CloudConsole:
+    """كلاس مسؤول عن تسجيل الدخول إلى Google Cloud Console."""
+
     def __init__(self, context):
         self.context = context
         self.username = None
         self.password = None
         self.user_id = None
         self.sender = None
+
+    # ==================== تسجيل الدخول ====================
 
     async def login(self, username: str, password: str, user_id: int = None, sender=None):
         self.username = username
@@ -24,66 +28,64 @@ class CloudConsole:
         self.sender = sender
 
         page = await self.context.new_page()
-        log.info("تسجيل الدخول إلى Cloud Console...")
+        log.info("🔐 بدء تسجيل الدخول إلى Cloud Console...")
         await page.goto("https://console.cloud.google.com", wait_until="domcontentloaded")
         await human_delay(3, 5)
-
         await self._shot(page, "1️⃣ فتح Cloud Console")
 
         try:
             for attempt in range(5):
-                log.info(f"--- محاولة {attempt + 1} ---")
+                log.info(f"--- المحاولة {attempt + 1} ---")
                 await human_delay(2, 3)
-                log.info(f"URL: {page.url[:120]}")
+                log.info(f"URL الحالي: {page.url[:120]}")
 
-                # 🔍 كلمة سر غلط؟
+                # ❌ كلمة سر خاطئة؟
                 if await self._has_wrong_password_error(page):
                     await self._shot(page, "❌ كلمة سر غلط")
                     raise RuntimeError("❌ كلمة السر غير صحيحة.")
 
-                # 🔍 verify؟
+                # ⚠️ مطلوب التحقق؟
                 if await self._has_verify_required(page):
                     await self._shot(page, "⚠️ Verify مطلوب")
-                    raise RuntimeError("⚠️ Google كتطلب verify")
+                    raise RuntimeError("⚠️ Google تطلب التحقق (verify)")
 
-                # ✅ 1. Sign in؟ (نفحصو أولاً — فيه input)
+                # ✅ 1. صفحة تسجيل الدخول
                 if await self._is_signin_page(page):
-                    log.info("🔑 Sign in")
+                    log.info("🔑 صفحة Sign in")
                     await self._shot(page, "2️⃣ صفحة Sign in")
-
                     try:
                         await self._do_signin(page, self.username, self.password)
                         await human_delay(5, 8)
                     except Exception as e:
-                        log.warning(f"⚠️ sign in: {e}")
+                        log.warning(f"⚠️ فشل تسجيل الدخول: {e}")
                         await self._shot(page, "❌ فشل Sign in")
                         await self._send_report(page, f"فشل Sign in: {str(e)[:200]}")
                         raise
                     continue
 
-                # ✅ 2. Welcome / TOS؟
+                # ✅ 2. صفحة الترحيب / شروط الخدمة
                 if await self._is_welcome_page(page):
-                    log.info("📋 Welcome/TOS")
+                    log.info("📋 صفحة Welcome / TOS")
                     await self._shot(page, "3️⃣ صفحة Welcome")
 
                     clicked = await self._click_blue_button(page)
                     if clicked:
-                        log.info(f"✅ ضغطنا: {clicked}")
-                        await self._shot(page, "✅ ضغطنا Accept")
+                        log.info(f"✅ تم الضغط على: {clicked}")
+                        await self._shot(page, "✅ تم قبول الشروط")
                         await human_delay(10, 15)
                     else:
-                        await self._shot(page, "❌ ما لقيناش زر")
-                        await self._send_report(page, "❌ ما لقيناش زر Accept فـ Welcome")
+                        await self._shot(page, "❌ لم نجد الزر")
+                        await self._send_report(page, "❌ لم نجد زر Accept في صفحة Welcome")
                         await human_delay(5, 8)
                     continue
 
-                # ✅ 3. Console ready؟
+                # ✅ 3. الكونسول جاهز
                 if await self._is_console_ready(page):
-                    log.info("✅ وصلنا للـ Console!")
-                    await self._shot(page, "4️⃣ دخل Google Cloud")
+                    log.info("✅ وصلنا إلى Console!")
+                    await self._shot(page, "4️⃣ تم الدخول إلى Google Cloud")
                     break
 
-                log.warning(f"❓ صفحة غير معروفة")
+                log.warning("❓ صفحة غير معروفة")
                 await human_delay(3, 5)
 
             await self._wait_for_console(page, timeout=30000)
@@ -95,10 +97,10 @@ class CloudConsole:
             await self._shot(page, "❌ فشل")
             raise
 
-    # ==================== Shot + Report ====================
+    # ==================== أدوات المساعدة (صور + تقارير) ====================
 
     async def _shot(self, page, caption: str = ""):
-        """Screenshot + إرسال فـ Telegram"""
+        """أخذ لقطة شاشة وإرسالها عبر Telegram."""
         try:
             from telegram import InputFile
             shot = await take_screenshot(page, caption[:30] if caption else "shot")
@@ -112,12 +114,12 @@ class CloudConsole:
                             caption=caption[:1000]
                         )
                 except Exception as e:
-                    log.warning(f"فشل إرسال الصورة: {e}")
+                    log.warning(f"تعذّر إرسال الصورة: {e}")
         except Exception as e:
             log.warning(f"_shot: {e}")
 
     async def _send_report(self, page, reason: str):
-        """يرسل تقرير مفصّل عن المشكل"""
+        """إرسال تقرير مفصّل عند حدوث مشكل."""
         try:
             info = await page.evaluate("""
                 () => {
@@ -169,6 +171,7 @@ class CloudConsole:
                 }
             """)
 
+            # حفظ التقرير محليًا
             try:
                 os.makedirs("/app/data/records", exist_ok=True)
                 path = f"/app/data/records/error_{int(time.time())}.json"
@@ -177,11 +180,13 @@ class CloudConsole:
             except Exception:
                 pass
 
-            msg = f"🔴 *تقرير المشكل*\n\n"
+            # بناء الرسالة
+            msg = "🔴 *تقرير المشكل*\n\n"
             msg += f"📋 *السبب:* {reason}\n\n"
             msg += f"🔗 *URL:*\n`{info.get('url', '')[:200]}`\n\n"
             msg += f"📄 *العنوان:* `{info.get('title', '')[:80]}`\n\n"
             msg += f"📝 *النص:*\n```{info.get('text', '')[:300]}```\n\n"
+
             msg += f"🔘 *الأزرار ({len(info.get('buttons', []))}):*\n"
             for b in info.get("buttons", [])[:15]:
                 msg += f"  • `{b['text']}` — bg:`{b['bg']}` @({b['x']},{b['y']})\n"
@@ -208,12 +213,14 @@ class CloudConsole:
     # ==================== دوال الفحص ====================
 
     async def _is_signin_page(self, page) -> bool:
+        """هل نحن في صفحة تسجيل الدخول؟"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
                 return True
             if "signin" in url and "workspaceterms" not in url:
                 return True
+
             has_input = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
@@ -230,6 +237,7 @@ class CloudConsole:
             return False
 
     async def _is_welcome_page(self, page) -> bool:
+        """هل نحن في صفحة الترحيب / شروط الخدمة؟"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
@@ -272,26 +280,24 @@ class CloudConsole:
             return False
 
     async def _has_wrong_password_error(self, page) -> bool:
+        """هل ظهر خطأ كلمة سر خاطئة؟"""
         try:
             content = (await page.content()).lower()
-            for txt in ['incorrect password', 'wrong password']:
-                if txt in content:
-                    return True
+            return any(txt in content for txt in ('incorrect password', 'wrong password'))
         except Exception:
-            pass
-        return False
+            return False
 
     async def _has_verify_required(self, page) -> bool:
+        """هل Google تطلب تحقق؟"""
         try:
             content = (await page.content()).lower()
-            for txt in ['verify it', 'verify your', 'enter the code', '2-step']:
-                if txt in content:
-                    return True
+            return any(txt in content for txt in
+                       ('verify it', 'verify your', 'enter the code', '2-step'))
         except Exception:
-            pass
-        return False
+            return False
 
     async def _is_console_ready(self, page) -> bool:
+        """هل وصلنا فعلاً إلى الكونسول؟"""
         url = page.url
         if "console.cloud.google.com" not in url:
             return False
@@ -299,18 +305,20 @@ class CloudConsole:
             return False
         if "/welcome" in url.lower() or "/new" in url.lower():
             return False
+
         try:
             text = (await page.inner_text("body")).lower()
             if "welcome to your new account" in text:
                 return False
         except Exception:
             pass
+
         return "project=" in url or "/home/" in url
 
-    # ==================== Click Blue Button (4 طرق) ====================
+    # ==================== الضغط على الزر الأزرق (5 طرق) ====================
 
     async def _click_blue_button(self, page) -> str:
-        """يضغط على الزر الأزرق — 4 طرق"""
+        """يضغط على الزر الأزرق — 5 طرق (آخرها batchexecute)"""
         log.info("🔍 نبحث عن الزر الأزرق...")
 
         # ✅ نسجل الأزرار
@@ -338,7 +346,7 @@ class CloudConsole:
             """)
             log.info(f"📋 الأزرار: {buttons}")
         except Exception as e:
-            log.warning(f"فشل جلب الأزرار: {e}")
+            log.warning(f"فشل: {e}")
             buttons = []
 
         # ✅ نلقاو الزر
@@ -371,18 +379,20 @@ class CloudConsole:
             'button:has-text("I understand")',
             'button:has-text("Agree and continue")',
             'button:has-text("Accept")',
-            'button:has-text("Continue")',
         ]:
             try:
                 el = page.locator(sel).first
-                cnt = await el.count()
-                if cnt > 0 and await el.is_visible():
+                if await el.count() > 0 and await el.is_visible():
                     await el.scroll_into_view_if_needed()
                     await human_delay(0.3, 0.5)
                     log.info(f"✅ لقينا: {sel}")
                     await el.click(timeout=5000)
                     log.info("✅ click نجح")
-                    return target_text
+                    await human_delay(2, 3)
+                    if await self._is_tos_gone(page):
+                        log.info("✅ TOS تبدلت!")
+                        return target_text
+                    log.warning("⚠️ TOS ما تبدلتش — نجربو طرق أخرى")
             except Exception as e:
                 log.warning(f"فشل {sel}: {e}")
                 continue
@@ -390,26 +400,24 @@ class CloudConsole:
         # ============================================
         # ✅ الطريقة 2: force click
         # ============================================
-        log.info("🖱️ الطريقة 2: force click")
-        for sel in [
-            'button:has-text("I understand")',
-            'button:has-text("Agree and continue")',
-            'button:has-text("Accept")',
-        ]:
-            try:
+        log.info("🖱️ الطريقة 2: force")
+        try:
+            for sel in ['button:has-text("I understand")', 'button:has-text("Agree and continue")']:
                 el = page.locator(sel).first
                 if await el.count() > 0:
                     await el.click(force=True, timeout=5000)
                     log.info(f"✅ force: {sel}")
-                    return target_text
-            except Exception as e:
-                log.warning(f"force فشل {sel}: {e}")
-                continue
+                    await human_delay(2, 3)
+                    if await self._is_tos_gone(page):
+                        log.info("✅ TOS تبدلت!")
+                        return target_text
+        except Exception as e:
+            log.warning(f"force: {e}")
 
         # ============================================
-        # ✅ الطريقة 3: JS click
+        # ✅ الطريقة 3: JS click + dispatch events
         # ============================================
-        log.info("🖱️ الطريقة 3: JS")
+        log.info("🖱️ الطريقة 3: JS + events")
         try:
             clicked = await page.evaluate("""
                 () => {
@@ -422,6 +430,16 @@ class CloudConsole:
                             if (t.includes(kw)) {
                                 el.scrollIntoView({block: 'center'});
                                 el.focus();
+                                // ✅ 5 أحداث
+                                const rect = el.getBoundingClientRect();
+                                const cx = rect.x + rect.width / 2;
+                                const cy = rect.y + rect.height / 2;
+                                const opts = {bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0};
+                                el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                                el.dispatchEvent(new MouseEvent('mousedown', opts));
+                                el.dispatchEvent(new PointerEvent('pointerup', opts));
+                                el.dispatchEvent(new MouseEvent('mouseup', opts));
+                                el.dispatchEvent(new MouseEvent('click', opts));
                                 el.click();
                                 return t;
                             }
@@ -432,61 +450,135 @@ class CloudConsole:
             """)
             if clicked:
                 log.info(f"✅ JS: {clicked}")
-                return clicked
+                await human_delay(2, 3)
+                if await self._is_tos_gone(page):
+                    log.info("✅ TOS تبدلت!")
+                    return target_text
         except Exception as e:
             log.warning(f"JS: {e}")
 
         # ============================================
-        # ✅ الطريقة 4: mouse.click
+        # ✅ الطريقة 4: batchexecute (Google RPC)
         # ============================================
-        log.info("🖱️ الطريقة 4: mouse.click")
+        log.info("🖱️ الطريقة 4: batchexecute (Google RPC)")
         try:
-            coords = await page.evaluate("""
-                (target_text) => {
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-                        if (el.offsetParent === null) continue;
-                        const t = (el.innerText || '').trim();
-                        if (t === target_text) {
-                            const rect = el.getBoundingClientRect();
-                            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-                        }
-                    }
-                    return null;
-                }
-            """, target_text)
-
-            if coords:
-                x = coords["x"]
-                y = coords["y"]
-                log.info(f"🎯 mouse @ ({x}, {y})")
-                await page.mouse.move(x, y, steps=10)
-                await human_delay(0.5, 1)
-                await page.mouse.down()
-                await human_delay(0.1, 0.2)
-                await page.mouse.up()
-                log.info("✅ mouse.click")
-                return target_text
+            result = await self._call_batchexecute(page)
+            if result:
+                log.info(f"✅ batchexecute: {result}")
+                await human_delay(3, 5)
+                if await self._is_tos_gone(page):
+                    log.info("✅ TOS تبدلت بـ batchexecute!")
+                    return target_text
         except Exception as e:
-            log.warning(f"mouse: {e}")
+            log.warning(f"batchexecute: {e}")
 
-        return None
+        # ============================================
+        # ✅ الطريقة 5: إعادة تحميل الصفحة
+        # ============================================
+        log.info("🖱️ الطريقة 5: reload")
+        try:
+            await page.reload(wait_until="domcontentloaded")
+            await human_delay(5, 8)
+        except Exception:
+            pass
 
-    # ==================== Sign In ====================
+        return target_text
+
+    # ==================== batchexecute ====================
+
+    async def _call_batchexecute(self, page) -> str:
+        """
+        يستدعي Google batchexecute API مباشرة
+        (نفس الطلبات اللي JS كيرسلهم)
+        """
+        try:
+            # ✅ نستخرجو القيم من الصفحة
+            wiz_data = await page.evaluate("""
+                () => {
+                    const wiz = window.WIZ_global_data || {};
+                    return {
+                        f_sid: wiz.FdrFJe || '',
+                        at: wiz.SNlM0e || '',
+                        bl: wiz.cfb2h || 'boq_identityfrontendauthuiserver_20260920.02_p0',
+                        dsh: wiz.Qzxixc || '',
+                        hl: wiz.GWsdKe || 'ar',
+                    };
+                }
+            """)
+
+            log.info(f"📋 WIZ: {wiz_data}")
+
+            if not wiz_data.get("at"):
+                log.warning("⚠️ ما لقيناش SNlM0e")
+                return None
+
+            # ✅ نستدعيو batchexecute
+            result = await page.evaluate("""
+                async (args) => {
+                    try {
+                        const url = `https://accounts.google.com/v3/signin/_/WorkspaceTermsOfServiceUi/data/batchexecute?rpcids=GVthp&source-path=%2Fv3%2Fsignin%2Fspeedbump%2Fworkspacetermsofservice&f.sid=${args.f_sid}&bl=${args.bl}&hl=${args.hl}&dsh=${args.dsh}&rt=c`;
+
+                        const body = `f.req=${encodeURIComponent(JSON.stringify([[[\"GVthp\",\"[[\\\"\\\"] ]\",null,\"generic\"]]]))}&at=${encodeURIComponent(args.at)}&`;
+
+                        const res = await fetch(url, {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {
+                                'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                                'x-same-domain': '1',
+                            },
+                            body: body,
+                        });
+
+                        const text = await res.text();
+                        return text.substring(0, 500);
+                    } catch(e) {
+                        return 'error: ' + e.message;
+                    }
+                }
+            """, wiz_data)
+
+            log.info(f"📥 batchexecute result: {result}")
+            return result
+
+        except Exception as e:
+            log.warning(f"batchexecute: {e}")
+            return None
+
+    # ==================== Check TOS gone ====================
+
+    async def _is_tos_gone(self, page) -> bool:
+        """يتحقق واش خرجنا من TOS"""
+        try:
+            url = page.url.lower()
+            if "workspacetermsofservice" in url or "speedbump" in url:
+                return False
+            if "welcome" in url:
+                # ✅ إذا كان TOS، ما زال
+                text = (await page.inner_text("body")).lower()
+                if "welcome to your new account" in text:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    # ==================== خطوات تسجيل الدخول ====================
 
     async def _do_signin(self, page, username: str, password: str):
-        # Email
+        """كتابة الإيميل وكلمة السر + التعامل مع CAPTCHA."""
+        # ---------- الإيميل ----------
         email_filled = False
-        for sel in [
+        for sel in (
             'input[type="email"]',
             'input[type="text"][name="identifier"]',
             'input[name="identifier"]',
             'input[type="text"]',
-        ]:
+        ):
             try:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ email: {sel}")
+                log.info(f"✅ حقل الإيميل: {sel}")
                 await el.click()
                 await human_delay(0.5, 1.0)
                 await el.fill("")
@@ -506,18 +598,18 @@ class CloudConsole:
                 continue
 
         if not email_filled:
-            raise RuntimeError("ما قدرتش نكتب الإيميل")
+            raise RuntimeError("تعذّر كتابة البريد الإلكتروني")
 
         await self._click_next(page, "email")
         await human_delay(4, 6)
 
-        # CAPTCHA
+        # ---------- CAPTCHA ----------
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             for _ in range(5):
                 await human_delay(3, 5)
                 if await has_captcha(page):
-                    log.info("🚨 CAPTCHA")
+                    log.info("🚨 CAPTCHA ظهر")
                     await self._shot(page, "🚨 CAPTCHA")
                     solved = await detect_and_solve_captcha(page)
                     if solved:
@@ -529,15 +621,15 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"CAPTCHA: {e}")
 
-        # Password
+        # ---------- كلمة السر ----------
         await human_delay(3, 5)
         pwd_filled = False
-        for sel in ['input[type="password"]', 'input[name="password"]']:
+        for sel in ('input[type="password"]', 'input[name="password"]'):
             try:
                 el = page.locator(sel).first
                 if await el.count() == 0 or not await el.is_visible():
                     continue
-                log.info(f"✅ pwd: {sel}")
+                log.info(f"✅ حقل كلمة السر: {sel}")
                 await el.click()
                 await human_delay(0.5, 1.0)
                 await el.fill("")
@@ -557,15 +649,18 @@ class CloudConsole:
                 continue
 
         if not pwd_filled:
-            raise RuntimeError("ما قدرتش نكتب password")
+            raise RuntimeError("تعذّر كتابة كلمة السر")
 
         await self._click_next(page, "password")
         await human_delay(8, 12)
-        log.info("✅ email + password done")
+        log.info("✅ تم إدخال الإيميل وكلمة السر")
 
     async def _click_next(self, page, step: str):
-        for sel in ['#identifierNext', '#passwordNext', '#captchaNext',
-                    'button:has-text("Next")', 'button[type="submit"]']:
+        """الضغط على زر Next في أي خطوة."""
+        for sel in (
+            '#identifierNext', '#passwordNext', '#captchaNext',
+            'button:has-text("Next")', 'button[type="submit"]',
+        ):
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0 and await el.is_visible():
@@ -575,7 +670,8 @@ class CloudConsole:
                 continue
 
     async def _wait_for_console(self, page, timeout: int = 30000):
-        log.info("انتظار Console...")
+        """انتظار تحميل الكونسول."""
+        log.info("⏳ انتظار تحميل Console...")
         try:
             await page.wait_for_function(
                 """() => {
@@ -587,5 +683,5 @@ class CloudConsole:
                 timeout=timeout,
             )
         except Exception:
-            log.warning("Timeout Console")
+            log.warning("⏱️ انتهت مدة انتظار Console")
         await human_delay(3, 5)
