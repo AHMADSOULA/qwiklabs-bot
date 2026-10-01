@@ -8,7 +8,6 @@ from utils.screenshot import take_screenshot
 
 log = get_logger("CloudConsole")
 
-
 class CloudConsole:
     """كلاس مسؤول عن تسجيل الدخول إلى Google Cloud Console."""
 
@@ -39,12 +38,10 @@ class CloudConsole:
                 await human_delay(2, 3)
                 log.info(f"URL الحالي: {page.url[:120]}")
 
-                # ❌ كلمة سر خاطئة؟
                 if await self._has_wrong_password_error(page):
                     await self._shot(page, "❌ كلمة سر غلط")
                     raise RuntimeError("❌ كلمة السر غير صحيحة.")
 
-                # ⚠️ مطلوب التحقق؟
                 if await self._has_verify_required(page):
                     await self._shot(page, "⚠️ Verify مطلوب")
                     raise RuntimeError("⚠️ Google تطلب التحقق (verify)")
@@ -70,16 +67,22 @@ class CloudConsole:
 
                     clicked = await self._click_blue_button(page)
                     if clicked:
-                        log.info(f"✅ تم الضغط على: {clicked}")
-                        await self._shot(page, "✅ تم قبول الشروط")
-                        # ✅ نستناو حتى TOS تختفي
-                        for _ in range(15):
+                        log.info(f"✅ تم تنفيذ الضغط على: {clicked}")
+
+                        # ⏳ نستناو TOS تختفي — حتى 40 ثانية
+                        gone = False
+                        for i in range(20):
                             await human_delay(2, 2)
                             if await self._is_tos_gone(page):
-                                log.info("✅ TOS اختفت!")
+                                log.info(f"✅ TOS اختفت بعد ~{(i+1)*2}s")
+                                gone = True
                                 break
-                        else:
+                            log.info(f"⏳ مازال TOS... ({(i+1)*2}s)")
+
+                        if not gone:
                             log.warning("⚠️ TOS ما اختفتش — نكملو بالقوة")
+                            await self._shot(page, "⚠️ TOS مازال")
+
                         await human_delay(5, 8)
                     else:
                         await self._shot(page, "❌ لم نجد الزر")
@@ -105,10 +108,9 @@ class CloudConsole:
             await self._shot(page, "❌ فشل")
             raise
 
-    # ==================== أدوات المساعدة (صور + تقارير) ====================
+    # ==================== أدوات المساعدة ====================
 
     async def _shot(self, page, caption: str = ""):
-        """أخذ لقطة شاشة وإرسالها عبر Telegram."""
         try:
             from telegram import InputFile
             shot = await take_screenshot(page, caption[:30] if caption else "shot")
@@ -127,7 +129,6 @@ class CloudConsole:
             log.warning(f"_shot: {e}")
 
     async def _send_report(self, page, reason: str):
-        """إرسال تقرير مفصّل عند حدوث مشكل."""
         try:
             info = await page.evaluate("""
                 () => {
@@ -179,7 +180,6 @@ class CloudConsole:
                 }
             """)
 
-            # حفظ التقرير محليًا
             try:
                 os.makedirs("/app/data/records", exist_ok=True)
                 path = f"/app/data/records/error_{int(time.time())}.json"
@@ -188,7 +188,6 @@ class CloudConsole:
             except Exception:
                 pass
 
-            # بناء الرسالة
             msg = "🔴 *تقرير المشكل*\n\n"
             msg += f"📋 *السبب:* {reason}\n\n"
             msg += f"🔗 *URL:*\n`{info.get('url', '')[:200]}`\n\n"
@@ -221,7 +220,6 @@ class CloudConsole:
     # ==================== دوال الفحص ====================
 
     async def _is_signin_page(self, page) -> bool:
-        """هل نحن في صفحة تسجيل الدخول؟"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
@@ -245,7 +243,6 @@ class CloudConsole:
             return False
 
     async def _is_welcome_page(self, page) -> bool:
-        """هل نحن في صفحة الترحيب / شروط الخدمة؟"""
         try:
             url = page.url.lower()
             if "accounts.google.com" in url:
@@ -288,7 +285,6 @@ class CloudConsole:
             return False
 
     async def _has_wrong_password_error(self, page) -> bool:
-        """هل ظهر خطأ كلمة سر خاطئة؟"""
         try:
             content = (await page.content()).lower()
             return any(txt in content for txt in ('incorrect password', 'wrong password'))
@@ -296,7 +292,6 @@ class CloudConsole:
             return False
 
     async def _has_verify_required(self, page) -> bool:
-        """هل Google تطلب تحقق؟"""
         try:
             content = (await page.content()).lower()
             return any(txt in content for txt in
@@ -305,7 +300,6 @@ class CloudConsole:
             return False
 
     async def _is_console_ready(self, page) -> bool:
-        """هل وصلنا فعلاً إلى الكونسول؟"""
         url = page.url
         if "console.cloud.google.com" not in url:
             return False
@@ -323,13 +317,15 @@ class CloudConsole:
 
         return "project=" in url or "/home/" in url
 
-    # ==================== الضغط على الزر الأزرق (mouse حقيقي) ====================
+    # ==================== الضغط على الزر الأزرق ====================
 
     async def _click_blue_button(self, page) -> str:
-        """يضغط على الزر الأزرق باستعمال mouse حقيقي + keyboard fallback"""
+        """
+        يضغط على الزر الأزرق مرة واحدة فقط بضغطة mouse حقيقية.
+        يرجع نص الزر إذا نجح في إيجاده وتنفيذ الضغط، None إذا لم يجد الزر.
+        """
         log.info("🔍 نبحث عن الزر الأزرق...")
 
-        # ✅ 1. نلقاو الزر
         target = await page.evaluate("""
             () => {
                 const kws = ['i understand', 'agree and continue', 'accept'];
@@ -362,9 +358,8 @@ class CloudConsole:
         log.info(f"🎯 الزر: '{target['text']}' @({target['x']},{target['y']}) size={target['w']}x{target['h']} bg={target['bg']}")
 
         # ============================================
-        # ✅ الطريقة 1: mouse حقيقي (الأقوى)
+        # 🖱️ ضغطة mouse حقيقية واحدة
         # ============================================
-        log.info("🖱️ الطريقة 1: mouse حقيقي")
         try:
             await page.evaluate(f"""
                 () => {{
@@ -372,9 +367,9 @@ class CloudConsole:
                     if (el) el.scrollIntoView({{block: 'center', behavior: 'instant'}});
                 }}
             """)
-            await human_delay(0.5, 1)
+            await human_delay(0.6, 1.0)
 
-            # نعاودو نحسبو الكوردينيات بعد الـ scroll
+            # إعادة حساب الإحداثيات بعد الـ scroll
             target2 = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue', 'accept'];
@@ -397,8 +392,9 @@ class CloudConsole:
             if target2:
                 target['x'] = target2['x']
                 target['y'] = target2['y']
+                log.info(f"📍 الإحداثيات بعد scroll: ({target['x']},{target['y']})")
 
-            # ✅ حركة إنسانية
+            # حركة إنسانية
             await page.mouse.move(target['x'] - 150, target['y'] - 80, steps=12)
             await human_delay(0.2, 0.4)
             await page.mouse.move(target['x'] - 50, target['y'] - 20, steps=10)
@@ -408,24 +404,21 @@ class CloudConsole:
             await page.mouse.move(target['x'], target['y'] + 1, steps=3)
             await human_delay(0.2, 0.4)
 
-            # ✅ ضغطة حقيقية
+            # الضغطة
             await page.mouse.down()
             await human_delay(0.08, 0.15)
             await page.mouse.up()
-            log.info("✅ mouse click تنفذ")
-            await human_delay(3, 5)
 
-            if await self._is_tos_gone(page):
-                log.info("✅ TOS تبدلت بـ mouse!")
-                return target['text']
-            log.warning("⚠️ mouse ما خدمش، نجربو طرق أخرى")
+            log.info("✅ mouse click تنفذ — نرجعو النجاح مباشرة")
+            return target['text']
+
         except Exception as e:
-            log.warning(f"mouse: {e}")
+            log.warning(f"❌ mouse click فشل: {e}")
 
         # ============================================
-        # ✅ الطريقة 2: Playwright force
+        # fallback: Playwright click
         # ============================================
-        log.info("🖱️ الطريقة 2: Playwright force")
+        log.info("🖱️ fallback: Playwright click")
         for sel in [
             'button:has-text("I understand")',
             'button:has-text("Agree and continue")',
@@ -437,47 +430,15 @@ class CloudConsole:
                     await el.scroll_into_view_if_needed()
                     await human_delay(0.5, 1)
                     await el.click(force=True, timeout=5000)
-                    log.info(f"✅ force: {sel}")
-                    await human_delay(3, 5)
-                    if await self._is_tos_gone(page):
-                        log.info("✅ TOS تبدلت بـ force!")
-                        return target['text']
+                    log.info(f"✅ fallback نجح: {sel}")
+                    return target['text']
             except Exception as e:
-                log.warning(f"force {sel}: {e}")
+                log.warning(f"fallback {sel}: {e}")
 
         # ============================================
-        # ✅ الطريقة 3: keyboard (Tab + Enter)
+        # fallback أخير: JS click
         # ============================================
-        log.info("⌨️ الطريقة 3: keyboard (Tab + Enter)")
-        try:
-            await page.click("body", position={"x": 10, "y": 10})
-            await human_delay(0.3, 0.5)
-            for i in range(30):
-                focused = await page.evaluate("""
-                    () => {
-                        const el = document.activeElement;
-                        if (!el) return {tag: '', text: ''};
-                        return {tag: el.tagName, text: (el.innerText || el.value || '').trim().toLowerCase(), type: el.type || ''};
-                    }
-                """)
-                log.info(f"🔎 focus[{i}]: {focused}")
-                if any(kw in focused.get('text', '') for kw in ['understand', 'agree', 'accept']):
-                    await page.keyboard.press("Enter")
-                    log.info("✅ Enter تنفذ")
-                    await human_delay(3, 5)
-                    if await self._is_tos_gone(page):
-                        log.info("✅ TOS تبدلت بـ keyboard!")
-                        return target['text']
-                    break
-                await page.keyboard.press("Tab")
-                await human_delay(0.15, 0.3)
-        except Exception as e:
-            log.warning(f"keyboard: {e}")
-
-        # ============================================
-        # ✅ الطريقة 4: JS click
-        # ============================================
-        log.info("🖱️ الطريقة 4: JS click")
+        log.info("🖱️ fallback: JS click")
         try:
             clicked = await page.evaluate("""
                 () => {
@@ -496,23 +457,19 @@ class CloudConsole:
                 }
             """)
             if clicked:
-                log.info(f"✅ JS: {clicked}")
-                await human_delay(3, 5)
-                if await self._is_tos_gone(page):
-                    log.info("✅ TOS تبدلت بـ JS!")
-                    return target['text']
+                log.info(f"✅ JS click: {clicked}")
+                return target['text']
         except Exception as e:
-            log.warning(f"JS: {e}")
+            log.warning(f"JS click: {e}")
 
-        log.warning("❌ كل الطرق فشلت")
         return None
 
     # ==================== Check TOS gone ====================
 
     async def _is_tos_gone(self, page) -> bool:
-        """يتحقق واش خرجنا من TOS"""
+        """يتحقق واش خرجنا من TOS — نسخة مصلحة."""
         try:
-            # ✅ 1. إذا الزر مازال ظاهر → مازال فـ TOS
+            # ✅ 1. إذا زر TOS مازال موجود في الصفحة → مازال فـ TOS
             still_has_button = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue'];
@@ -520,12 +477,7 @@ class CloudConsole:
                         if (el.offsetParent === null || el.disabled) continue;
                         const t = (el.innerText || '').trim().toLowerCase();
                         for (const kw of kws) {
-                            if (t.includes(kw)) {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.top > 0 && rect.top < window.innerHeight) {
-                                    return true;
-                                }
-                            }
+                            if (t.includes(kw)) return true;
                         }
                     }
                     return false;
@@ -534,15 +486,18 @@ class CloudConsole:
             if still_has_button:
                 return False
 
-            # ✅ 2. إذا الـ URL تبدل لـ console
+            # ✅ 2. URL تبدل لـ console (بدون شرط workspacetermsofservice)
             url = page.url.lower()
-            if "console.cloud.google.com" in url and "workspacetermsofservice" not in url and "speedbump" not in url:
+            if "console.cloud.google.com" in url:
                 return True
 
-            # ✅ 3. إذا النص اختفى
-            text = (await page.inner_text("body")).lower()
-            if "welcome to your new account" not in text:
-                return True
+            # ✅ 3. النص ما بقاش فيه TOS
+            try:
+                text = (await page.inner_text("body")).lower()
+                if "welcome to your new account" not in text and "i understand" not in text:
+                    return True
+            except Exception:
+                pass
 
             return False
         except Exception as e:
@@ -552,7 +507,6 @@ class CloudConsole:
     # ==================== خطوات تسجيل الدخول ====================
 
     async def _do_signin(self, page, username: str, password: str):
-        """كتابة الإيميل وكلمة السر + التعامل مع CAPTCHA."""
         # ---------- الإيميل ----------
         email_filled = False
         for sel in (
@@ -643,7 +597,6 @@ class CloudConsole:
         log.info("✅ تم إدخال الإيميل وكلمة السر")
 
     async def _click_next(self, page, step: str):
-        """الضغط على زر Next في أي خطوة."""
         for sel in (
             '#identifierNext', '#passwordNext', '#captchaNext',
             'button:has-text("Next")', 'button[type="submit"]',
@@ -657,7 +610,6 @@ class CloudConsole:
                 continue
 
     async def _wait_for_console(self, page, timeout: int = 30000):
-        """انتظار تحميل الكونسول."""
         log.info("⏳ انتظار تحميل Console...")
         try:
             await page.wait_for_function(
