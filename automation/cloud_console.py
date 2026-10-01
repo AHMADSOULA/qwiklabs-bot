@@ -33,10 +33,10 @@ class CloudConsole:
         await self._shot(page, "1️⃣ فتح Cloud Console")
 
         try:
-            for attempt in range(5):
+            for attempt in range(8):
                 log.info(f"--- المحاولة {attempt + 1} ---")
                 await human_delay(2, 3)
-                log.info(f"URL الحالي: {page.url[:120]}")
+                log.info(f"URL الحالي: {page.url[:150]}")
 
                 if await self._has_wrong_password_error(page):
                     await self._shot(page, "❌ كلمة سر غلط")
@@ -46,21 +46,7 @@ class CloudConsole:
                     await self._shot(page, "⚠️ Verify مطلوب")
                     raise RuntimeError("⚠️ Google تطلب التحقق (verify)")
 
-                # ✅ 1. صفحة تسجيل الدخول
-                if await self._is_signin_page(page):
-                    log.info("🔑 صفحة Sign in")
-                    await self._shot(page, "2️⃣ صفحة Sign in")
-                    try:
-                        await self._do_signin(page, self.username, self.password)
-                        await human_delay(5, 8)
-                    except Exception as e:
-                        log.warning(f"⚠️ فشل تسجيل الدخول: {e}")
-                        await self._shot(page, "❌ فشل Sign in")
-                        await self._send_report(page, f"فشل Sign in: {str(e)[:200]}")
-                        raise
-                    continue
-
-                # ✅ 2. صفحة الترحيب / شروط الخدمة
+                # ✅ 0. TOS / speedbump — الأولوية القصوى
                 if await self._is_welcome_page(page):
                     log.info("📋 صفحة Welcome / TOS")
                     await self._shot(page, "3️⃣ صفحة Welcome")
@@ -69,7 +55,6 @@ class CloudConsole:
                     if clicked:
                         log.info(f"✅ تم تنفيذ الضغط على: {clicked}")
 
-                        # ⏳ نستناو TOS تختفي — حتى 40 ثانية
                         gone = False
                         for i in range(20):
                             await human_delay(2, 2)
@@ -90,13 +75,27 @@ class CloudConsole:
                         await human_delay(5, 8)
                     continue
 
-                # ✅ 3. الكونسول جاهز
+                # ✅ 1. صفحة تسجيل الدخول
+                if await self._is_signin_page(page):
+                    log.info("🔑 صفحة Sign in")
+                    await self._shot(page, "2️⃣ صفحة Sign in")
+                    try:
+                        await self._do_signin(page, self.username, self.password)
+                        await human_delay(5, 8)
+                    except Exception as e:
+                        log.warning(f"⚠️ فشل تسجيل الدخول: {e}")
+                        await self._shot(page, "❌ فشل Sign in")
+                        await self._send_report(page, f"فشل Sign in: {str(e)[:200]}")
+                        raise
+                    continue
+
+                # ✅ 2. الكونسول جاهز
                 if await self._is_console_ready(page):
                     log.info("✅ وصلنا إلى Console!")
                     await self._shot(page, "4️⃣ تم الدخول إلى Google Cloud")
                     break
 
-                log.warning("❓ صفحة غير معروفة")
+                log.warning("❓ صفحة غير معروفة — نستناو")
                 await human_delay(3, 5)
 
             await self._wait_for_console(page, timeout=30000)
@@ -220,11 +219,19 @@ class CloudConsole:
     # ==================== دوال الفحص ====================
 
     async def _is_signin_page(self, page) -> bool:
+        """هل نحن في صفحة تسجيل الدخول؟ (ماشي TOS)"""
         try:
             url = page.url.lower()
+
+            # ❌ TOS / speedbump → ماشي signin
+            if "workspacetermsofservice" in url or "speedbump" in url:
+                return False
+
+            # ✅ accounts.google.com (بدون TOS) → signin
             if "accounts.google.com" in url:
                 return True
-            if "signin" in url and "workspaceterms" not in url:
+
+            if "signin" in url:
                 return True
 
             has_input = await page.evaluate("""
@@ -243,11 +250,19 @@ class CloudConsole:
             return False
 
     async def _is_welcome_page(self, page) -> bool:
+        """هل نحن في صفحة الترحيب / شروط الخدمة؟"""
         try:
             url = page.url.lower()
+
+            # ✅ 1. TOS من URL — الأولوية القصوى
+            if "workspacetermsofservice" in url or "speedbump" in url:
+                return True
+
+            # ✅ 2. accounts.google.com غير TOS → ماشي welcome
             if "accounts.google.com" in url:
                 return False
 
+            # ✅ 3. ما فيهش حقل إيميل؟
             has_email = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
@@ -260,9 +275,7 @@ class CloudConsole:
             if has_email:
                 return False
 
-            if "workspacetermsofservice" in url or "speedbump" in url:
-                return True
-
+            # ✅ 4. نشوفو النص والأزرار
             info = await page.evaluate("""
                 () => {
                     const text = (document.body.innerText || '').toLowerCase();
@@ -322,7 +335,7 @@ class CloudConsole:
     async def _click_blue_button(self, page) -> str:
         """
         يضغط على الزر الأزرق مرة واحدة فقط بضغطة mouse حقيقية.
-        يرجع نص الزر إذا نجح في إيجاده وتنفيذ الضغط، None إذا لم يجد الزر.
+        يرجع نص الزر إذا نجح، None إذا لم يجد الزر.
         """
         log.info("🔍 نبحث عن الزر الأزرق...")
 
@@ -369,7 +382,7 @@ class CloudConsole:
             """)
             await human_delay(0.6, 1.0)
 
-            # إعادة حساب الإحداثيات بعد الـ scroll
+            # إعادة حساب الإحداثيات بعد scroll
             target2 = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue', 'accept'];
@@ -467,9 +480,9 @@ class CloudConsole:
     # ==================== Check TOS gone ====================
 
     async def _is_tos_gone(self, page) -> bool:
-        """يتحقق واش خرجنا من TOS — نسخة مصلحة."""
+        """يتحقق واش خرجنا من TOS."""
         try:
-            # ✅ 1. إذا زر TOS مازال موجود في الصفحة → مازال فـ TOS
+            # ✅ 1. إذا زر TOS مازال موجود → مازال فـ TOS
             still_has_button = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue'];
@@ -486,12 +499,16 @@ class CloudConsole:
             if still_has_button:
                 return False
 
-            # ✅ 2. URL تبدل لـ console (بدون شرط workspacetermsofservice)
+            # ✅ 2. URL فيه speedbump/workspacetermsofservice → مازال
             url = page.url.lower()
+            if "speedbump" in url or "workspacetermsofservice" in url:
+                return False
+
+            # ✅ 3. URL رجع لـ console → خلاص
             if "console.cloud.google.com" in url:
                 return True
 
-            # ✅ 3. النص ما بقاش فيه TOS
+            # ✅ 4. النص ما بقاش فيه TOS
             try:
                 text = (await page.inner_text("body")).lower()
                 if "welcome to your new account" not in text and "i understand" not in text:
