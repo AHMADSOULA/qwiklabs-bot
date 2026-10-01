@@ -8,6 +8,7 @@ from utils.screenshot import take_screenshot
 
 log = get_logger("CloudConsole")
 
+
 class CloudConsole:
     """كلاس مسؤول عن تسجيل الدخول إلى Google Cloud Console."""
 
@@ -38,23 +39,27 @@ class CloudConsole:
                 await human_delay(2, 3)
                 log.info(f"URL الحالي: {page.url[:150]}")
 
+                # ❌ كلمة سر خاطئة؟
                 if await self._has_wrong_password_error(page):
                     await self._shot(page, "❌ كلمة سر غلط")
                     raise RuntimeError("❌ كلمة السر غير صحيحة.")
 
+                # ⚠️ مطلوب التحقق؟
                 if await self._has_verify_required(page):
                     await self._shot(page, "⚠️ Verify مطلوب")
                     raise RuntimeError("⚠️ Google تطلب التحقق (verify)")
 
-                # ✅ 0. TOS / speedbump — الأولوية القصوى
+                # ✅ 0. TOS / Welcome / speedbump — الأولوية القصوى
                 if await self._is_welcome_page(page):
                     log.info("📋 صفحة Welcome / TOS")
                     await self._shot(page, "3️⃣ صفحة Welcome")
 
                     clicked = await self._click_blue_button(page)
                     if clicked:
-                        log.info(f"✅ تم تنفيذ الضغط على: {clicked}")
+                        log.info(f"✅ تم الضغط على: {clicked}")
+                        await self._shot(page, "✅ تم قبول الشروط")
 
+                        # ⏳ نستناو TOS تختفي (حتى 40 ثانية)
                         gone = False
                         for i in range(20):
                             await human_delay(2, 2)
@@ -67,7 +72,6 @@ class CloudConsole:
                         if not gone:
                             log.warning("⚠️ TOS ما اختفتش — نكملو بالقوة")
                             await self._shot(page, "⚠️ TOS مازال")
-
                         await human_delay(5, 8)
                     else:
                         await self._shot(page, "❌ لم نجد الزر")
@@ -134,7 +138,6 @@ class CloudConsole:
                     const url = window.location.href.substring(0, 300);
                     const title = document.title || '';
                     const text = (document.body.innerText || '').substring(0, 1000).replace(/\\n+/g, ' | ');
-
                     const buttons = [];
                     for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
                         if (el.offsetParent === null) continue;
@@ -154,7 +157,6 @@ class CloudConsole:
                             });
                         }
                     }
-
                     const inputs = [];
                     for (const el of document.querySelectorAll('input, textarea, select')) {
                         if (el.offsetParent === null) continue;
@@ -172,13 +174,10 @@ class CloudConsole:
                             y: Math.round(rect.y + rect.height / 2),
                         });
                     }
-
                     const iframes = document.querySelectorAll('iframe').length;
-
                     return { url, title, text, buttons, inputs, iframes };
                 }
             """)
-
             try:
                 os.makedirs("/app/data/records", exist_ok=True)
                 path = f"/app/data/records/error_{int(time.time())}.json"
@@ -192,15 +191,12 @@ class CloudConsole:
             msg += f"🔗 *URL:*\n`{info.get('url', '')[:200]}`\n\n"
             msg += f"📄 *العنوان:* `{info.get('title', '')[:80]}`\n\n"
             msg += f"📝 *النص:*\n```{info.get('text', '')[:300]}```\n\n"
-
             msg += f"🔘 *الأزرار ({len(info.get('buttons', []))}):*\n"
             for b in info.get("buttons", [])[:15]:
                 msg += f"  • `{b['text']}` — bg:`{b['bg']}` @({b['x']},{b['y']})\n"
-
             msg += f"\n📝 *الحقول ({len(info.get('inputs', []))}):*\n"
             for i in info.get("inputs", [])[:15]:
                 msg += f"  • type=`{i['type']}` name=`{i['name']}` aria=`{i['aria'][:30]}`\n"
-
             msg += f"\n🖼️ *iframes:* {info.get('iframes', 0)}"
 
             if self.sender:
@@ -212,7 +208,6 @@ class CloudConsole:
                             await self.sender.reply_text(msg[i:i+3500])
                 except Exception:
                     pass
-
         except Exception as e:
             log.warning(f"_send_report: {e}")
 
@@ -222,25 +217,17 @@ class CloudConsole:
         """هل نحن في صفحة تسجيل الدخول؟ (ماشي TOS)"""
         try:
             url = page.url.lower()
-
-            # ❌ TOS / speedbump → ماشي signin
             if "workspacetermsofservice" in url or "speedbump" in url:
                 return False
-
-            # ✅ accounts.google.com (بدون TOS) → signin
             if "accounts.google.com" in url:
                 return True
-
             if "signin" in url:
                 return True
-
             has_input = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
                         if (inp.offsetParent === null) continue;
-                        if (inp.type === 'email' || inp.name === 'identifier' || inp.type === 'password') {
-                            return true;
-                        }
+                        if (inp.type === 'email' || inp.name === 'identifier' || inp.type === 'password') return true;
                     }
                     return false;
                 }
@@ -253,16 +240,11 @@ class CloudConsole:
         """هل نحن في صفحة الترحيب / شروط الخدمة؟"""
         try:
             url = page.url.lower()
-
-            # ✅ 1. TOS من URL — الأولوية القصوى
             if "workspacetermsofservice" in url or "speedbump" in url:
                 return True
-
-            # ✅ 2. accounts.google.com غير TOS → ماشي welcome
             if "accounts.google.com" in url:
                 return False
 
-            # ✅ 3. ما فيهش حقل إيميل؟
             has_email = await page.evaluate("""
                 () => {
                     for (const inp of document.querySelectorAll('input')) {
@@ -275,7 +257,6 @@ class CloudConsole:
             if has_email:
                 return False
 
-            # ✅ 4. نشوفو النص والأزرار
             info = await page.evaluate("""
                 () => {
                     const text = (document.body.innerText || '').toLowerCase();
@@ -320,23 +301,18 @@ class CloudConsole:
             return False
         if "/welcome" in url.lower() or "/new" in url.lower():
             return False
-
         try:
             text = (await page.inner_text("body")).lower()
             if "welcome to your new account" in text:
                 return False
         except Exception:
             pass
-
         return "project=" in url or "/home/" in url
 
     # ==================== الضغط على الزر الأزرق ====================
 
     async def _click_blue_button(self, page) -> str:
-        """
-        يضغط على الزر الأزرق مرة واحدة فقط بضغطة mouse حقيقية.
-        يرجع نص الزر إذا نجح، None إذا لم يجد الزر.
-        """
+        """يضغط على الزر الأزرق مرة واحدة فقط بضغطة mouse حقيقية."""
         log.info("🔍 نبحث عن الزر الأزرق...")
 
         target = await page.evaluate("""
@@ -370,9 +346,7 @@ class CloudConsole:
 
         log.info(f"🎯 الزر: '{target['text']}' @({target['x']},{target['y']}) size={target['w']}x{target['h']} bg={target['bg']}")
 
-        # ============================================
         # 🖱️ ضغطة mouse حقيقية واحدة
-        # ============================================
         try:
             await page.evaluate(f"""
                 () => {{
@@ -382,13 +356,12 @@ class CloudConsole:
             """)
             await human_delay(0.6, 1.0)
 
-            # إعادة حساب الإحداثيات بعد scroll
             target2 = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue', 'accept'];
                     for (const el of document.querySelectorAll('button, a, [role="button"]')) {
                         if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        const t = (el.innerText || '').trim().toLowerCase();
                         for (const kw of kws) {
                             if (t.includes(kw)) {
                                 const rect = el.getBoundingClientRect();
@@ -407,7 +380,6 @@ class CloudConsole:
                 target['y'] = target2['y']
                 log.info(f"📍 الإحداثيات بعد scroll: ({target['x']},{target['y']})")
 
-            # حركة إنسانية
             await page.mouse.move(target['x'] - 150, target['y'] - 80, steps=12)
             await human_delay(0.2, 0.4)
             await page.mouse.move(target['x'] - 50, target['y'] - 20, steps=10)
@@ -417,20 +389,16 @@ class CloudConsole:
             await page.mouse.move(target['x'], target['y'] + 1, steps=3)
             await human_delay(0.2, 0.4)
 
-            # الضغطة
             await page.mouse.down()
             await human_delay(0.08, 0.15)
             await page.mouse.up()
-
             log.info("✅ mouse click تنفذ — نرجعو النجاح مباشرة")
             return target['text']
 
         except Exception as e:
             log.warning(f"❌ mouse click فشل: {e}")
 
-        # ============================================
-        # fallback: Playwright click
-        # ============================================
+        # fallback: Playwright
         log.info("🖱️ fallback: Playwright click")
         for sel in [
             'button:has-text("I understand")',
@@ -448,9 +416,7 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"fallback {sel}: {e}")
 
-        # ============================================
-        # fallback أخير: JS click
-        # ============================================
+        # fallback أخير: JS
         log.info("🖱️ fallback: JS click")
         try:
             clicked = await page.evaluate("""
@@ -460,10 +426,7 @@ class CloudConsole:
                         if (el.offsetParent === null || el.disabled) continue;
                         const t = (el.innerText || '').trim().toLowerCase();
                         for (const kw of kws) {
-                            if (t.includes(kw)) {
-                                el.click();
-                                return t;
-                            }
+                            if (t.includes(kw)) { el.click(); return t; }
                         }
                     }
                     return null;
@@ -480,9 +443,7 @@ class CloudConsole:
     # ==================== Check TOS gone ====================
 
     async def _is_tos_gone(self, page) -> bool:
-        """يتحقق واش خرجنا من TOS."""
         try:
-            # ✅ 1. إذا زر TOS مازال موجود → مازال فـ TOS
             still_has_button = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue'];
@@ -499,16 +460,12 @@ class CloudConsole:
             if still_has_button:
                 return False
 
-            # ✅ 2. URL فيه speedbump/workspacetermsofservice → مازال
             url = page.url.lower()
             if "speedbump" in url or "workspacetermsofservice" in url:
                 return False
-
-            # ✅ 3. URL رجع لـ console → خلاص
             if "console.cloud.google.com" in url:
                 return True
 
-            # ✅ 4. النص ما بقاش فيه TOS
             try:
                 text = (await page.inner_text("body")).lower()
                 if "welcome to your new account" not in text and "i understand" not in text:
@@ -524,7 +481,6 @@ class CloudConsole:
     # ==================== خطوات تسجيل الدخول ====================
 
     async def _do_signin(self, page, username: str, password: str):
-        # ---------- الإيميل ----------
         email_filled = False
         for sel in (
             'input[type="email"]',
@@ -579,7 +535,6 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"CAPTCHA: {e}")
 
-        # ---------- كلمة السر ----------
         await human_delay(3, 5)
         pwd_filled = False
         for sel in ('input[type="password"]', 'input[name="password"]'):
