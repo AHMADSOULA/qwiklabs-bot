@@ -34,8 +34,6 @@ class StealthBrowser:
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-accelerated-2d-canvas",
-            "--single-process",
-            "--no-zygote",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
@@ -54,7 +52,6 @@ class StealthBrowser:
         launch_kwargs = {
             "user_data_dir": config.CHROME_PROFILE_DIR,
             "headless": config.HEADLESS,
-            "channel": "chrome",
             "args": args,
             "viewport": {"width": 1920, "height": 1080},
             "user_agent": config.USER_AGENT,
@@ -107,5 +104,8 @@ class StealthBrowser:
             except Exception:
                 pass
         if self.playwright:
-            await self.playwright.stop()
+            try:
+                await self.playwright.stop()
+            except Exception:
+                pass
         log.info("تم إغلاق المتصفح")
