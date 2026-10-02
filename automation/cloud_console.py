@@ -34,7 +34,7 @@ class CloudConsole:
         await self._shot(page, "1️⃣ فتح Cloud Console")
 
         try:
-            for attempt in range(8):
+            for attempt in range(10):
                 log.info(f"--- المحاولة {attempt + 1} ---")
                 await human_delay(2, 3)
                 log.info(f"URL الحالي: {page.url[:150]}")
@@ -49,7 +49,7 @@ class CloudConsole:
                     await self._shot(page, "⚠️ Verify مطلوب")
                     raise RuntimeError("⚠️ Google تطلب التحقق (verify)")
 
-                # ✅ 0. TOS / Welcome / speedbump — الأولوية القصوى
+                # ✅ 0. TOS / Welcome / speedbump
                 if await self._is_welcome_page(page):
                     log.info("📋 صفحة Welcome / TOS")
                     await self._shot(page, "3️⃣ صفحة Welcome")
@@ -59,7 +59,6 @@ class CloudConsole:
                         log.info(f"✅ تم الضغط على: {clicked}")
                         await self._shot(page, "✅ تم قبول الشروط")
 
-                        # ⏳ نستناو TOS تختفي (حتى 40 ثانية)
                         gone = False
                         for i in range(20):
                             await human_delay(2, 2)
@@ -77,6 +76,21 @@ class CloudConsole:
                         await self._shot(page, "❌ لم نجد الزر")
                         await self._send_report(page, "❌ لم نجد زر Accept في صفحة Welcome")
                         await human_delay(5, 8)
+                    continue
+
+                # ✅ 0.5. Terms Dialog الجديد (بعد TOS الأولى)
+                if await self._has_terms_dialog(page):
+                    log.info("📋 Terms Dialog ظهر")
+                    await self._shot(page, "📋 Terms Dialog")
+
+                    handled = await self._handle_terms_dialog(page)
+                    if handled:
+                        await self._shot(page, "✅ تم قبول Terms Dialog")
+                    else:
+                        await self._shot(page, "⚠️ Terms Dialog ما تعالجش")
+                        await self._send_report(page, "⚠️ فشل التعامل مع Terms Dialog")
+
+                    await human_delay(4, 6)
                     continue
 
                 # ✅ 1. صفحة تسجيل الدخول
@@ -193,7 +207,7 @@ class CloudConsole:
             msg += f"📝 *النص:*\n```{info.get('text', '')[:300]}```\n\n"
             msg += f"🔘 *الأزرار ({len(info.get('buttons', []))}):*\n"
             for b in info.get("buttons", [])[:15]:
-                msg += f"  • `{b['text']}` — bg:`{b['bg']}` @({b['x']},{b['y']})\n"
+                msg += f"  • `{b['text']}` — bg:`{b['bg']}` @({b['x']},{b['y']}) dis={b['disabled']}\n"
             msg += f"\n📝 *الحقول ({len(info.get('inputs', []))}):*\n"
             for i in info.get("inputs", [])[:15]:
                 msg += f"  • type=`{i['type']}` name=`{i['name']}` aria=`{i['aria'][:30]}`\n"
@@ -214,7 +228,6 @@ class CloudConsole:
     # ==================== دوال الفحص ====================
 
     async def _is_signin_page(self, page) -> bool:
-        """هل نحن في صفحة تسجيل الدخول؟ (ماشي TOS)"""
         try:
             url = page.url.lower()
             if "workspacetermsofservice" in url or "speedbump" in url:
@@ -237,7 +250,6 @@ class CloudConsole:
             return False
 
     async def _is_welcome_page(self, page) -> bool:
-        """هل نحن في صفحة الترحيب / شروط الخدمة؟"""
         try:
             url = page.url.lower()
             if "workspacetermsofservice" in url or "speedbump" in url:
@@ -278,6 +290,24 @@ class CloudConsole:
         except Exception:
             return False
 
+    async def _has_terms_dialog(self, page) -> bool:
+        """يتحقق واش كاين Terms Dialog ظاهر"""
+        try:
+            return await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').toLowerCase();
+                        if (t.includes('terms of service') && (t.includes('agree') || t.includes('i agree'))) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+        except Exception:
+            return False
+
     async def _has_wrong_password_error(self, page) -> bool:
         try:
             content = (await page.content()).lower()
@@ -301,18 +331,309 @@ class CloudConsole:
             return False
         if "/welcome" in url.lower() or "/new" in url.lower():
             return False
+
+        # ما نعتبروهش ready إذا Dialog مفتوح
+        has_dialog = await page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal')) {
+                    if (el.offsetParent === null) continue;
+                    const t = (el.innerText || '').toLowerCase();
+                    if (t.includes('terms of service') && t.includes('agree')) return true;
+                }
+                return false;
+            }
+        """)
+        if has_dialog:
+            return False
+
         try:
             text = (await page.inner_text("body")).lower()
             if "welcome to your new account" in text:
                 return False
         except Exception:
             pass
+
         return "project=" in url or "/home/" in url
 
-    # ==================== الضغط على الزر الأزرق ====================
+    # ==================== Terms Dialog ====================
+
+    async def _handle_terms_dialog(self, page) -> bool:
+        """
+        يتعامل مع نافذة Google Cloud Terms of Service Dialog:
+        - يضغط checkbox "I agree to..."
+        - ثم يضغط زر "Agree and continue"
+        """
+        log.info("🔍 نبحث عن نافذة Terms Dialog...")
+
+        # ✅ 1. نلقاو الـ checkbox
+        checkbox_info = await page.evaluate("""
+            () => {
+                const containers = [
+                    ...document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog'),
+                    document.body
+                ];
+
+                for (const container of containers) {
+                    for (const el of container.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox')) {
+                        if (el.offsetParent === null) continue;
+
+                        const parent = el.closest('label, div, mat-checkbox') || el.parentElement;
+                        const txt = (parent?.innerText || '').toLowerCase();
+                        if (txt.includes('i agree') || txt.includes('terms of service') || txt.includes('cloud platform')) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width === 0 || rect.height === 0) continue;
+                            return {
+                                x: Math.round(rect.x + rect.width / 2),
+                                y: Math.round(rect.y + rect.height / 2),
+                                w: Math.round(rect.width),
+                                h: Math.round(rect.height),
+                                checked: el.checked || el.getAttribute('aria-checked') === 'true',
+                            };
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+
+        if not checkbox_info:
+            log.warning("⚠️ ما لقيناش checkbox في Terms Dialog")
+            # نحاولو نضغطو الزر مباشرة
+            return await self._click_agree_button(page)
+
+        log.info(f"📋 لقينا checkbox @({checkbox_info['x']},{checkbox_info['y']}) size={checkbox_info['w']}x{checkbox_info['h']} checked={checkbox_info['checked']}")
+
+        # ✅ 2. نضغطو على الـ checkbox إذا ماشي مفعّل
+        if not checkbox_info['checked']:
+            clicked_ok = False
+
+            # محاولة 1: mouse click حقيقي
+            try:
+                await page.mouse.move(checkbox_info['x'] - 40, checkbox_info['y'] - 40, steps=10)
+                await human_delay(0.3, 0.5)
+                await page.mouse.move(checkbox_info['x'], checkbox_info['y'], steps=8)
+                await human_delay(0.3, 0.5)
+                await page.mouse.down()
+                await human_delay(0.1, 0.2)
+                await page.mouse.up()
+                log.info("✅ mouse click على checkbox")
+                await human_delay(1.5, 2.5)
+
+                checked_now = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox')) {
+                            if (el.offsetParent === null) continue;
+                            const parent = el.closest('label, div, mat-checkbox') || el.parentElement;
+                            const txt = (parent?.innerText || '').toLowerCase();
+                            if (txt.includes('i agree') || txt.includes('terms of service')) {
+                                return el.checked || el.getAttribute('aria-checked') === 'true';
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if checked_now:
+                    clicked_ok = True
+                    log.info("✅ checkbox تفعّل")
+            except Exception as e:
+                log.warning(f"mouse click على checkbox فشل: {e}")
+
+            # محاولة 2: Playwright
+            if not clicked_ok:
+                for sel in [
+                    '[role="dialog"] input[type="checkbox"]',
+                    '[role="dialog"] [role="checkbox"]',
+                    'md-dialog input[type="checkbox"]',
+                    'mat-checkbox',
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count() > 0 and await el.is_visible():
+                            await el.click(force=True, timeout=3000)
+                            log.info(f"✅ Playwright checkbox: {sel}")
+                            clicked_ok = True
+                            break
+                    except Exception:
+                        continue
+
+            # محاولة 3: JS click
+            if not clicked_ok:
+                try:
+                    clicked_js = await page.evaluate("""
+                        () => {
+                            for (const el of document.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox')) {
+                                if (el.offsetParent === null) continue;
+                                const parent = el.closest('label, div, mat-checkbox') || el.parentElement;
+                                const txt = (parent?.innerText || '').toLowerCase();
+                                if (txt.includes('i agree') || txt.includes('terms of service')) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    if clicked_js:
+                        log.info("✅ JS click على checkbox")
+                        await human_delay(1.5, 2.5)
+                except Exception as e:
+                    log.warning(f"JS click على checkbox فشل: {e}")
+        else:
+            log.info("ℹ️ checkbox مفعّل من قبل")
+
+        # ✅ 3. نضغطو على زر Agree
+        return await self._click_agree_button(page)
+
+    async def _click_agree_button(self, page) -> bool:
+        """يضغط على زر Agree and continue في Terms Dialog"""
+        await human_delay(1, 2)
+
+        # نلقاو الزر
+        agree_target = await page.evaluate("""
+            () => {
+                const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
+                for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
+                    if (el.offsetParent === null) continue;
+                    const t = (el.innerText || el.value || '').trim().toLowerCase();
+                    for (const kw of kws) {
+                        if (t === kw || t.includes(kw)) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width === 0 || rect.height === 0) continue;
+                            const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                            return {
+                                text: (el.innerText || el.value || '').trim(),
+                                x: Math.round(rect.x + rect.width / 2),
+                                y: Math.round(rect.y + rect.height / 2),
+                                w: Math.round(rect.width),
+                                h: Math.round(rect.height),
+                                disabled: disabled,
+                            };
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+
+        if not agree_target:
+            log.warning("⚠️ ما لقيناش زر Agree")
+            return False
+
+        log.info(f"🎯 زر Agree: '{agree_target['text']}' @({agree_target['x']},{agree_target['y']}) dis={agree_target['disabled']}")
+
+        # إذا الزر معطّل، نستناو شوية
+        if agree_target['disabled']:
+            log.warning("⚠️ زر Agree معطّل — نستناو checkbox")
+            for _ in range(5):
+                await human_delay(1, 2)
+                agree_target = await page.evaluate("""
+                    () => {
+                        const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
+                        for (const el of document.querySelectorAll('button, [role="button"]')) {
+                            if (el.offsetParent === null) continue;
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            for (const kw of kws) {
+                                if (t === kw || t.includes(kw)) {
+                                    const rect = el.getBoundingClientRect();
+                                    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                                    return {
+                                        x: Math.round(rect.x + rect.width / 2),
+                                        y: Math.round(rect.y + rect.height / 2),
+                                        disabled: disabled,
+                                    };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if agree_target and not agree_target.get('disabled'):
+                    break
+
+        # ضغطة mouse حقيقية
+        try:
+            await page.evaluate(f"""
+                () => {{
+                    const el = document.elementFromPoint({agree_target['x']}, {agree_target['y']});
+                    if (el) el.scrollIntoView({{block: 'center', behavior: 'instant'}});
+                }}
+            """)
+            await human_delay(0.8, 1.2)
+
+            # نعاودو نحسبو
+            target2 = await page.evaluate("""
+                () => {
+                    const kws = ['agree and continue', 'i agree', 'accept'];
+                    for (const el of document.querySelectorAll('button, [role="button"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        for (const kw of kws) {
+                            if (t === kw || t.includes(kw)) {
+                                const rect = el.getBoundingClientRect();
+                                return {
+                                    x: Math.round(rect.x + rect.width / 2),
+                                    y: Math.round(rect.y + rect.height / 2),
+                                };
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if target2:
+                agree_target['x'] = target2['x']
+                agree_target['y'] = target2['y']
+
+            await page.mouse.move(agree_target['x'] - 100, agree_target['y'] - 50, steps=10)
+            await human_delay(0.3, 0.5)
+            await page.mouse.move(agree_target['x'], agree_target['y'], steps=8)
+            await human_delay(0.4, 0.7)
+            await page.mouse.down()
+            await human_delay(0.1, 0.15)
+            await page.mouse.up()
+            log.info("✅ mouse click على زر Agree")
+
+        except Exception as e:
+            log.warning(f"mouse click على Agree فشل: {e}")
+            for sel in [
+                'button:has-text("Agree and continue")',
+                'button:has-text("I agree")',
+                'button:has-text("Agree")',
+                'button:has-text("Accept")',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count() > 0 and await el.is_visible():
+                        await el.click(force=True, timeout=5000)
+                        log.info(f"✅ fallback: {sel}")
+                        break
+                except Exception:
+                    continue
+
+        # ✅ 4. نستناو النافذة تختفي
+        for i in range(15):
+            await human_delay(2, 2)
+            gone = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').toLowerCase();
+                        if (t.includes('terms of service') && t.includes('agree')) return false;
+                    }
+                    return true;
+                }
+            """)
+            if gone:
+                log.info(f"✅ Terms Dialog اختفت بعد ~{(i+1)*2}s")
+                return True
+            log.info(f"⏳ مازال Terms Dialog... ({(i+1)*2}s)")
+
+        log.warning("⚠️ Terms Dialog ما اختفتش")
+        return False
+
+    # ==================== الضغط على الزر الأزرق (TOS الأولى) ====================
 
     async def _click_blue_button(self, page) -> str:
-        """يضغط على الزر الأزرق مرة واحدة فقط بضغطة mouse حقيقية."""
         log.info("🔍 نبحث عن الزر الأزرق...")
 
         target = await page.evaluate("""
@@ -346,7 +667,6 @@ class CloudConsole:
 
         log.info(f"🎯 الزر: '{target['text']}' @({target['x']},{target['y']}) size={target['w']}x{target['h']} bg={target['bg']}")
 
-        # 🖱️ ضغطة mouse حقيقية واحدة
         try:
             await page.evaluate(f"""
                 () => {{
@@ -398,8 +718,6 @@ class CloudConsole:
         except Exception as e:
             log.warning(f"❌ mouse click فشل: {e}")
 
-        # fallback: Playwright
-        log.info("🖱️ fallback: Playwright click")
         for sel in [
             'button:has-text("I understand")',
             'button:has-text("Agree and continue")',
@@ -416,8 +734,6 @@ class CloudConsole:
             except Exception as e:
                 log.warning(f"fallback {sel}: {e}")
 
-        # fallback أخير: JS
-        log.info("🖱️ fallback: JS click")
         try:
             clicked = await page.evaluate("""
                 () => {
@@ -517,7 +833,6 @@ class CloudConsole:
         await self._click_next(page, "email")
         await human_delay(4, 6)
 
-        # ---------- CAPTCHA ----------
         try:
             from automation.captcha_solver import has_captcha, detect_and_solve_captcha
             for _ in range(5):
