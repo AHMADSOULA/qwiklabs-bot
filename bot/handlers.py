@@ -9,12 +9,110 @@ from database import db
 from utils.helpers import extract_urls
 from utils.logger import get_logger
 from automation.browser import StealthBrowser
-from automation.qwiklabs import QwikLabsSession
-from automation.cloud_console import CloudConsole
+from automation.sso_flow import run_sso_flow
 
 log = get_logger("Handlers")
 job_lock = asyncio.Lock()
 
+
+# ═══════════════════════════════════════════
+# قوالب VLESS و JSON و Dark
+# ═══════════════════════════════════════════
+
+VLESS_TEMPLATE = (
+    "vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@google.com:443"
+    "?path=%2FTelegram%2F%40AM2_D3%2F%40AHMAD3214&security=tls&encryption=none"
+    "&host={domain}&type=ws&sni={domain}#%40AHMAD3214"
+)
+
+JSON_TEMPLATE = r'''{
+  "dns": {
+    "fallbackStrategy": "disabledIfAnyMatch",
+    "hosts": {},
+    "servers": [
+      {
+        "address": "tcp://8.8.8.8",
+        "fakedns": [
+          {"ipPool": "198.18.0.0/15", "poolSize": 65535}
+        ],
+        "queryStrategy": "UseIPv4"
+      }
+    ]
+  },
+  "inbounds": [
+    {"listen": "0.0.0.0", "port": "1080", "protocol": "dokodemo-door",
+     "settings": {"network": "tcp,udp", "followRedirect": true}, "tag": "tun-inbound"},
+    {"listen": "127.0.0.1", "port": "10808", "protocol": "socks",
+     "settings": {"auth": "noauth", "udp": true}, "tag": "socks-inbound"}
+  ],
+  "log": {"loglevel": "warning"},
+  "outbounds": [
+    {
+      "mux": {"enabled": false},
+      "protocol": "vless",
+      "proxySettings": {"tag": "AhMed", "transportLayer": true},
+      "settings": {
+        "vnext": [{
+          "address": "yt3.ggpht.com", "port": 443,
+          "users": [{"encryption": "none", "flow": "", "id": "aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000", "level": 8}]
+        }]
+      },
+      "streamSettings": {
+        "network": "ws", "security": "tls",
+        "tlsSettings": {"allowInsecure": true, "serverName": "yt3.ggpht.com"},
+        "wsSettings": {"headers": {"Host": "__DOMAIN__"}, "path": "/Telegram/@AM2_D3/@AHMAD3214"}
+      },
+      "tag": "VLESS"
+    },
+    {
+      "domainStrategy": "AsIs",
+      "protocol": "http",
+      "settings": {
+        "servers": [{"address": "57.144.120.4", "port": 8080}],
+        "headers": {"Host": "yt3.ggpht.com:443", "Proxy-Connection": "keep-alive",
+                    "User-Agent": "FBAV/0.0", "X-iorg-bsid": "@AM2_D3"}
+      },
+      "tag": "@AM2_D3"
+    },
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "blackhole", "tag": "block"}
+  ],
+  "policy": {"levels": {"8": {"connIdle": 300, "downlinkOnly": 1, "handshake": 4, "uplinkOnly": 1}}},
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {"outboundTag": "direct", "protocol": ["dns"], "type": "field"},
+      {"inboundTag": ["tun-inbound", "socks-inbound"], "outboundTag": "VLESS", "type": "field"}
+    ]
+  }
+}'''
+
+DARKTUNNEL_BASE_URI = "darktunnel://eyJ0eXBlIjoiVkxFU1MiLCJuYW1lIjoi2YXYrNin2YbZiiDYp9iz2YrYpyDZiCDYp9ir2YrYsSAiLCJ2bGVzc1R1bm5lbENvbmZpZyI6eyJ2MnJheUNvbmZpZyI6eyJob3N0IjoiYWx0MTMueXQzLmdncGh0LmNvbSIsInBvcnQiOjQ0MywidXVpZCI6ImFhYWExMTExLWJiYmItNGNjYy04ZGRkLWVlZWVmZmZmMDAwMCIsInNlcnZlck5hbWVJbmRpY2F0aW9uIjoiYWx0MTMueXQzLmdncGh0LmNvbSIsIndzUGF0aCI6Ii9UZWxlZ3JhbS9AQU0yX0QzL0BBSE1BRDMyMTQiLCJ3c0hlYWRlckhvc3QiOiJhaG1lZC12aXAxLTQxNDAwODYxMjEyMy5ldXJvcGUtd2VzdDEucnVuLmFwcCJ9LCJpbmplY3RDb25maWciOnsiZW5hYmxlZCI6dHJ1ZSwibW9kZSI6IlBST1hZIiwicHJveHlIb3N0IjoiMTU3LjI0MC45LjM5IiwicGF5bG9hZCI6IkNPTk5FQ1QgW2hvc3RdOltwb3J0XSBIVFRQLzEuMVtjcmxmXXgtY29ubmVjdGVkLXRvOiAzNC4xNDMuNzIuMltjcmxmXXByb3h5LWNvbm5lY3Rpb246IGtlZXAtYWxpdmVbY3JsZl1jb25uZWN0aW9uOiBrZWVwLWFsaXZlW2NybGZddXNlci1hZ2VudDogRkJBVi8wLjAgW2NybGZdeC1pb3JnLWJzaWQ6IEBBTTJfRDNbY3JsZl1bY3JsZl0ifX19"
+
+
+def _b64_pad(s: str) -> str:
+    return s + ("=" * ((4 - (len(s) % 4)) % 4)) if s else s
+
+def build_darktunnel_uri_with_host(new_host: str) -> str:
+    import base64, json as _json
+    b64 = _b64_pad(DARKTUNNEL_BASE_URI.split("darktunnel://", 1)[1].strip())
+    data = _json.loads(base64.b64decode(b64.encode("utf-8")).decode("utf-8"))
+    stack = [data]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            if "wsHeaderHost" in cur:
+                cur["wsHeaderHost"] = new_host
+            stack.extend(v for v in cur.values() if isinstance(v, (dict, list)))
+        elif isinstance(cur, list):
+            stack.extend(v for v in cur if isinstance(v, (dict, list)))
+    raw = _json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return "darktunnel://" + base64.b64encode(raw).decode("utf-8")
+
+
+# ═══════════════════════════════════════════
+# الأوامر
+# ═══════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -37,11 +135,9 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
     for jid, status, created in jobs:
         emoji = {"pending": "⏳", "done": "✅", "failed": "❌", "waiting_password": "🔑"}.get(status, "❔")
-        lines.append(messages.JOB_LINE.format(
-            id=jid, status_emoji=emoji, status=status, date=created
-        ))
+        lines.append(f"• `#{jid}` — {emoji} {status} — {created}")
     await update.message.reply_text(
-        messages.STATUS_TEMPLATE.format(count=len(jobs), jobs="\n".join(lines)),
+        f"📊 *آخر {len(jobs)} مهام:*\n\n" + "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -50,8 +146,6 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.clear_session(user.id)
     b = context.bot_data.pop(f"browser_{user.id}", None)
-    context.bot_data.pop(f"page_{user.id}", None)
-    context.bot_data.pop(f"ctx_{user.id}", None)
     if b:
         try:
             await b.close()
@@ -60,8 +154,11 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 تم الإلغاء.")
 
 
+# ═══════════════════════════════════════════
+# استقبال SSO
+# ═══════════════════════════════════════════
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يستقبل رابط SSO"""
     text = update.message.text or ""
     urls = extract_urls(text)
     if not urls:
@@ -69,7 +166,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     sso_url = urls[0]
     user = update.effective_user
-    if "skills.google" not in sso_url and "qwiklabs" not in sso_url and "AddSession" not in sso_url:
+
+    if "skills.google" not in sso_url and "qwiklabs" not in sso_url:
         await update.message.reply_text("⚠️ الرابط لا يبدو من Google Skills.")
         return
 
@@ -79,7 +177,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     job_id = await db.add_job(user.id, sso_url)
-    await db.set_session(user_id=user.id, job_id=job_id, sso_url=sso_url, state="opening_sso")
+    await db.set_session(user_id=user.id, job_id=job_id, sso_url=sso_url, state="running")
 
     msg = await update.message.reply_text(
         f"📥 تم استلام المهمة `#{job_id}`\n\n{messages.PROCESSING}",
@@ -88,8 +186,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_job(job_id, sso_url, msg, user.id, context))
 
 
+# ═══════════════════════════════════════════
+# المهمة الرئيسية
+# ═══════════════════════════════════════════
+
 async def run_job(job_id, sso_url, msg, user_id, context):
-    """يفتح SSO + يستخرج credentials"""
     async with job_lock:
         browser = StealthBrowser()
         try:
@@ -100,153 +201,69 @@ async def run_job(job_id, sso_url, msg, user_id, context):
             ctx = await browser.start()
 
             await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 فتح SSO...",
+                f"🚀 *#{job_id}*\n\n🔹 بدء العملية...",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            ql = QwikLabsSession(ctx)
-            page = await ql.open_sso(sso_url)
 
-            await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 استخراج البيانات...",
+            result = await run_sso_flow(ctx, sso_url, sender=msg, chat_id=user_id)
+
+            domain = result["domain"]
+            final_url = result["final_url"]
+
+            await db.update_job(job_id, "done", final_url)
+            await db.clear_session(user_id)
+
+            # ─── النتيجة النهائية ───
+            await msg.reply_text(
+                f"✅ **𝙃𝙚𝙧𝙚 𝙮𝙤𝙪 𝙜𝙤 𝙗𝙧𝙤**\n\n"
+                f"🌐 **Domain:**\n`{domain}`\n\n"
+                f"🔗 **URL:**\n`{final_url}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
-            username, password = await ql.extract_credentials(page)
 
-            # ✅ نسجلو page + browser فـ bot_data
-            context.bot_data[f"page_{user_id}"] = page
-            context.bot_data[f"browser_{user_id}"] = browser
-            context.bot_data[f"ctx_{user_id}"] = ctx
+            # VLESS
+            vless_result = VLESS_TEMPLATE.format(domain=domain)
+            await msg.reply_text(
+                f"🔗 <b>VLESS:</b>\n<pre><code class=\"language-java\">{vless_result}</code></pre>",
+                parse_mode='html'
+            )
 
-            # ✅ إذا password موجود → نكملو
-            if password:
-                await db.set_session(
-                    user_id=user_id,
-                    username=username,
-                    password=password,
-                    state="ready"
-                )
-                await msg.edit_text(
-                    f"✅ *#{job_id}*\n\n"
-                    f"👤 `{username}`\n"
-                    f"🔑 password موجود\n\n"
-                    f"🚀 تسجيل الدخول...",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                asyncio.create_task(run_step2(job_id, username, password, msg, user.id, context))
-            else:
-                # ✅ نطلبو password
-                await db.set_session(
-                    user_id=user_id,
-                    username=username,
-                    state="waiting_password"
-                )
-                await msg.edit_text(
-                    f"✅ *#{job_id}*\n\n"
-                    f"👤 `{username}`\n\n"
-                    f"🔑 *أرسل كلمة السر:*",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
+            # JSON
+            json_result = JSON_TEMPLATE.replace("__DOMAIN__", domain)
+            await msg.reply_text(
+                f"📄 <b>JSON:</b>\n<pre><code class=\"language-json\">{json_result}</code></pre>",
+                parse_mode='html'
+            )
+
+            # Dark file
+            new_uri = build_darktunnel_uri_with_host(domain)
+            safe_domain = "".join(c for c in domain.lower() if c.isalnum() or c in ".-_")[:40]
+            bio = __import__("io").BytesIO(new_uri.encode("utf-8"))
+            bio.name = f"زين و اسيا مجاني - {safe_domain}.dark"
+            await msg.reply_document(
+                document=bio,
+                filename=bio.name,
+                caption=f"✅ ملف DarkTunnel جاهز:\n`{domain}`"
+            )
 
         except Exception as e:
             log.exception("فشل تنفيذ المهمة")
             await db.update_job(job_id, "failed", str(e))
             await db.clear_session(user_id)
-            await msg.edit_text(
-                messages.FAILED.format(error=str(e)[:300]),
+            await msg.reply_text(
+                f"❌ *فشل*\n\n{str(e)[:500]}",
                 parse_mode=ParseMode.MARKDOWN,
             )
+        finally:
             try:
                 await browser.close()
             except Exception:
                 pass
 
 
-async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يستقبل password من المستخدم"""
-    user = update.effective_user
-    text = (update.message.text or "").strip()
-
-    session = await db.get_session(user.id)
-    if not session or session.get("state") != "waiting_password":
-        return
-
-    job_id = session["job_id"]
-    username = session["username"]
-
-    # ✅ نمسحو رسالة password للأمان
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    await db.set_session(user_id=user.id, password=text, state="ready")
-
-    msg = await update.message.reply_text(
-        f"✅ استلمنا password\n\n🚀 تسجيل الدخول...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-    asyncio.create_task(run_step2(job_id, username, text, msg, user.id, context))
-
-
-async def run_step2(job_id, username, password, msg, user_id, context):
-    """تسجيل الدخول عبر CloudConsole"""
-    async with job_lock:
-        try:
-            page = context.bot_data.get(f"page_{user_id}")
-            if not page:
-                raise RuntimeError("الجلسة انتهت. أرسل SSO جديد.")
-
-            await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 تسجيل الدخول...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-
-            # ✅ نستدعي CloudConsole.login مع user_id + sender
-            cc = CloudConsole(page.context)
-            console_page = await cc.login(
-                username,
-                password,
-                user_id=user_id,
-                sender=msg,
-            )
-
-            await db.update_job(job_id, "done", f"logged_in:{username}")
-            await db.clear_session(user_id)
-
-            await msg.edit_text(
-                f"✅ *#{job_id}*\n\n"
-                f"👤 `{username}`\n\n"
-                f"🔗 {console_page.url}",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-
-        except Exception as e:
-            log.exception("فشل تسجيل الدخول")
-            await db.update_job(job_id, "failed", str(e))
-            await db.clear_session(user_id)
-            await msg.edit_text(
-                messages.FAILED.format(error=str(e)[:300]),
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        finally:
-            # ✅ تنظيف
-            try:
-                pg = context.bot_data.pop(f"page_{user_id}", None)
-                if pg:
-                    await pg.close()
-            except Exception:
-                pass
-            b = context.bot_data.pop(f"browser_{user_id}", None)
-            context.bot_data.pop(f"ctx_{user_id}", None)
-            if b:
-                try:
-                    await b.close()
-                except Exception:
-                    pass
-
+# ═══════════════════════════════════════════
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أزرار Inline"""
     query = update.callback_query
     await query.answer()
     if query.data == "status":
