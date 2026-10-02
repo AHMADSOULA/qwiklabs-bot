@@ -13,6 +13,26 @@ except ImportError:
 log = get_logger("Browser")
 
 
+# ✅ حجب الموارد الثقيلة (صور، فيديو، خطوط) — توفير ذاكرة
+async def _block_heavy_resources(route):
+    try:
+        rt = route.request.resource_type
+        url = route.request.url.lower()
+        # نسمحو captcha
+        if 'captcha' in url or 'recaptcha' in url:
+            await route.continue_()
+            return
+        if rt in ('image', 'media', 'font'):
+            await route.abort()
+        else:
+            await route.continue_()
+    except Exception:
+        try:
+            await route.continue_()
+        except Exception:
+            pass
+
+
 class StealthBrowser:
     def __init__(self):
         self.playwright = None
@@ -22,22 +42,34 @@ class StealthBrowser:
         self.playwright = await async_playwright().start()
         os.makedirs(config.CHROME_PROFILE_DIR, exist_ok=True)
 
+        # ✅ args محسّنة للذاكرة — بحال GC.py
         args = [
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--no-sandbox",
-            "--disable-dev-shm-usage",
             "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",           # ⭐ مهم للذاكرة
+            "--disable-gpu",                     # ⭐ مهم للذاكرة
+            "--disable-software-rasterizer",
+            "--disable-accelerated-2d-canvas",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-infobars",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-accelerated-2d-canvas",
+            "--disable-extensions",
+            "--disable-plugins",
+            "--disable-sync",
+            "--disable-translate",
+            "--disable-default-apps",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
-            "--window-size=1920,1080",
+            "--mute-audio",
+            "--hide-scrollbars",
+            "--metrics-recording-only",
+            "--safebrowsing-disable-auto-update",
+            "--renderer-process-limit=1",        # ⭐ مهم
+            "--js-flags=--max-old-space-size=256",  # ⭐ حد الذاكرة
+            "--window-size=1280,720",
             f"--user-agent={config.USER_AGENT}",
         ]
 
@@ -53,7 +85,7 @@ class StealthBrowser:
             "user_data_dir": config.CHROME_PROFILE_DIR,
             "headless": config.HEADLESS,
             "args": args,
-            "viewport": {"width": 1920, "height": 1080},
+            "viewport": {"width": 1280, "height": 720},
             "user_agent": config.USER_AGENT,
             "locale": "en-US",
             "timezone_id": "America/New_York",
@@ -75,11 +107,14 @@ class StealthBrowser:
         try:
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
         except Exception as e:
-            log.warning(f"Chrome channel fail: {e}")
+            log.warning(f"launch فشل: {e}")
             launch_kwargs.pop("channel", None)
             self.context = await self.playwright.chromium.launch_persistent_context(**launch_kwargs)
 
         await self.context.add_init_script(STEALTH_JS)
+
+        # ✅ حجب الموارد
+        await self.context.route("**/*", _block_heavy_resources)
 
         if HAS_STEALTH:
             async def apply(page):
