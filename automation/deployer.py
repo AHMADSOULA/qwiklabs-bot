@@ -1,6 +1,6 @@
 """
 automation/deployer.py
-كل خطوات Google Cloud Run (TOS + Terms Dialog + API + Deploy + URL)
+كل خطوات Cloud Run — بلا تصوير لتوفير الذاكرة
 """
 import asyncio
 import re
@@ -10,13 +10,11 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import expect
 
 from utils.logger import get_logger
-from utils.helpers import human_delay
 
 log = get_logger("Deployer")
 
 
 def extract_project_id(url: str) -> str:
-    """يستخرج project_id من رابط SSO"""
     m = re.search(r'(qwiklabs-gcp-[\w-]+)', url or "")
     return m.group(1) if m else None
 
@@ -29,98 +27,49 @@ def extract_domain_from_service_url(service_url: str) -> str:
 
 
 class CloudRunDeployer:
-    def __init__(self, page, chat_id=None, sender=None):
+    def __init__(self, page):
         self.page = page
-        self.chat_id = chat_id
-        self.sender = sender
-
-    async def _shot(self, caption: str = ""):
-        if not self.sender:
-            return
-        try:
-            path = f"/app/data/screenshots/shot_{int(asyncio.get_event_loop().time()*1000)}.png"
-            await self.page.screenshot(path=path, full_page=False)
-            with open(path, "rb") as f:
-                await self.sender.reply_photo(photo=f, caption=caption[:1000])
-        except Exception as e:
-            log.warning(f"تعذّر إرسال الصورة: {e}")
 
     # ==================== STEP 1: TOS الأولى ====================
 
     async def step1_welcome_screen(self):
-        log.info("🚀 step1_welcome_screen: بدء")
+        log.info("🚀 step1: بدء")
         page = self.page
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2500)
-
-        await self._shot("3️⃣ صفحة Welcome")
-
-        is_tos = await page.evaluate("""
-            () => {
-                const url = window.location.href.toLowerCase();
-                if (url.includes('workspacetermsofservice') || url.includes('speedbump')) return true;
-                const text = (document.body.innerText || '').toLowerCase();
-                if (text.includes('welcome to your new account')) return true;
-                for (const el of document.querySelectorAll('button, [role="button"]')) {
-                    if (el.offsetParent === null) continue;
-                    const t = (el.innerText || '').trim().toLowerCase();
-                    if (t.includes('i understand')) return true;
-                }
-                return false;
-            }
-        """)
-
-        if not is_tos:
-            log.info("ℹ️ ماشي في صفحة TOS الأولى — نتجاوزو")
-            return
-
-        target = await page.evaluate("""
-            () => {
-                const kws = ['i understand', 'agree and continue', 'accept'];
-                for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
-                    if (el.offsetParent === null || el.disabled) continue;
-                    const t = (el.innerText || el.value || '').trim().toLowerCase();
-                    for (const kw of kws) {
-                        if (t.includes(kw)) {
-                            const rect = el.getBoundingClientRect();
-                            return {
-                                text: (el.innerText || el.value || '').trim(),
-                                x: Math.round(rect.x + rect.width / 2),
-                                y: Math.round(rect.y + rect.height / 2),
-                            };
-                        }
-                    }
-                }
-                return null;
-            }
-        """)
-
-        if not target:
-            log.warning("⚠️ ما لقيناش زر I understand")
-            await self._shot("⚠️ ما لقيناش زر I understand")
-            return
-
-        log.info(f"🎯 الزر: '{target['text']}' @({target['x']},{target['y']})")
 
         try:
-            await page.evaluate(f"""
-                () => {{
-                    const el = document.elementFromPoint({target['x']}, {target['y']});
-                    if (el) el.scrollIntoView({{block: 'center', behavior: 'instant'}});
-                }}
-            """)
-            await page.wait_for_timeout(800)
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(2500)
 
-            target2 = await page.evaluate("""
+            is_tos = await page.evaluate("""
+                () => {
+                    const url = window.location.href.toLowerCase();
+                    if (url.includes('workspacetermsofservice') || url.includes('speedbump')) return true;
+                    const text = (document.body.innerText || '').toLowerCase();
+                    if (text.includes('welcome to your new account')) return true;
+                    for (const el of document.querySelectorAll('button, [role="button"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t.includes('i understand')) return true;
+                    }
+                    return false;
+                }
+            """)
+
+            if not is_tos:
+                log.info("ℹ️ ماشي TOS")
+                return
+
+            target = await page.evaluate("""
                 () => {
                     const kws = ['i understand', 'agree and continue', 'accept'];
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                    for (const el of document.querySelectorAll('button, a, [role="button"], input[type="submit"]')) {
                         if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || '').trim().toLowerCase();
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
                         for (const kw of kws) {
                             if (t.includes(kw)) {
                                 const rect = el.getBoundingClientRect();
                                 return {
+                                    text: (el.innerText || el.value || '').trim(),
                                     x: Math.round(rect.x + rect.width / 2),
                                     y: Math.round(rect.y + rect.height / 2),
                                 };
@@ -130,100 +79,148 @@ class CloudRunDeployer:
                     return null;
                 }
             """)
-            if target2:
-                target['x'] = target2['x']
-                target['y'] = target2['y']
 
-            await page.mouse.move(target['x'] - 150, target['y'] - 80, steps=12)
-            await page.wait_for_timeout(300)
-            await page.mouse.move(target['x'] - 50, target['y'] - 20, steps=10)
-            await page.wait_for_timeout(300)
-            await page.mouse.move(target['x'], target['y'], steps=8)
-            await page.wait_for_timeout(500)
-            await page.mouse.down()
-            await page.wait_for_timeout(120)
-            await page.mouse.up()
-            log.info("✅ mouse click تنفذ")
-        except Exception as e:
-            log.warning(f"❌ mouse click فشل: {e}")
+            if not target:
+                log.warning("⚠️ ما لقيناش الزر")
+                return
+
+            log.info(f"🎯 '{target['text']}' @({target['x']},{target['y']})")
+
             try:
-                await page.get_by_role("button", name="I understand").click(timeout=5000)
-                log.info("✅ Playwright click نجح")
-            except Exception as e2:
-                log.warning(f"❌ Playwright click فشل: {e2}")
+                await page.evaluate(f"""
+                    () => {{
+                        const el = document.elementFromPoint({target['x']}, {target['y']});
+                        if (el) el.scrollIntoView({{block: 'center', behavior: 'instant'}});
+                    }}
+                """)
+                await page.wait_for_timeout(800)
 
-        for i in range(20):
-            await page.wait_for_timeout(2000)
-            gone = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('button, a, [role="button"]')) {
-                        if (el.offsetParent === null || el.disabled) continue;
-                        const t = (el.innerText || '').trim().toLowerCase();
-                        if (t.includes('i understand') || t.includes('agree and continue')) return false;
+                target2 = await page.evaluate("""
+                    () => {
+                        const kws = ['i understand', 'agree and continue', 'accept'];
+                        for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                            if (el.offsetParent === null || el.disabled) continue;
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            for (const kw of kws) {
+                                if (t.includes(kw)) {
+                                    const rect = el.getBoundingClientRect();
+                                    return {
+                                        x: Math.round(rect.x + rect.width / 2),
+                                        y: Math.round(rect.y + rect.height / 2),
+                                    };
+                                }
+                            }
+                        }
+                        return null;
                     }
-                    return true;
-                }
-            """)
-            if gone:
-                log.info(f"✅ TOS الأولى اختفت بعد ~{(i+1)*2}s")
-                await self._shot("✅ تم قبول الشروط الأولى")
-                break
-            log.info(f"⏳ مازال TOS الأولى... ({(i+1)*2}s)")
+                """)
+                if target2:
+                    target['x'] = target2['x']
+                    target['y'] = target2['y']
 
-        await page.wait_for_load_state("networkidle")
-        log.info("✅ step1 انتهى")
+                await page.mouse.move(target['x'] - 150, target['y'] - 80, steps=12)
+                await page.wait_for_timeout(300)
+                await page.mouse.move(target['x'] - 50, target['y'] - 20, steps=10)
+                await page.wait_for_timeout(300)
+                await page.mouse.move(target['x'], target['y'], steps=8)
+                await page.wait_for_timeout(500)
+                await page.mouse.down()
+                await page.wait_for_timeout(120)
+                await page.mouse.up()
+                log.info("✅ mouse click")
+            except Exception as e:
+                log.warning(f"❌ mouse: {e}")
+                try:
+                    await page.get_by_role("button", name="I understand").click(timeout=5000)
+                except Exception:
+                    pass
+
+            for i in range(20):
+                await page.wait_for_timeout(2000)
+                try:
+                    gone = await page.evaluate("""
+                        () => {
+                            for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+                                if (el.offsetParent === null || el.disabled) continue;
+                                const t = (el.innerText || '').trim().toLowerCase();
+                                if (t.includes('i understand') || t.includes('agree and continue')) return false;
+                            }
+                            return true;
+                        }
+                    """)
+                    if gone:
+                        log.info(f"✅ TOS اختفت ~{(i+1)*2}s")
+                        break
+                except Exception:
+                    log.info(f"⏳ {i+1}")
+            log.info("✅ step1 انتهى")
+        except Exception as e:
+            log.warning(f"❌ step1: {e}")
 
     # ==================== STEP 2: Terms Dialog ====================
 
     async def step2_terms_dialog(self):
-        log.info("🚀 step2_terms_dialog: بدء")
+        log.info("🚀 step2: بدء")
         page = self.page
 
-        has_dialog = await page.evaluate("""
-            () => {
-                for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog')) {
-                    if (el.offsetParent === null) continue;
-                    const t = (el.innerText || '').toLowerCase();
-                    if (t.includes('terms of service') && (t.includes('agree') || t.includes('i agree'))) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-        """)
-
-        if not has_dialog:
-            log.info("ℹ️ ما كاينش Terms Dialog — نتجاوزو")
-            return
-
-        log.info("📋 لقينا Terms Dialog")
-        await self._shot("📋 Terms Dialog")
-
-        checkbox_info = await page.evaluate("""
-            () => {
-                const containers = [
-                    ...document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog'),
-                    document.body
-                ];
-                for (const container of containers) {
-                    for (const el of container.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox')) {
+        try:
+            has_dialog = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog')) {
                         if (el.offsetParent === null) continue;
-                        const parent = el.closest('label, div, mat-checkbox') || el.parentElement;
-                        const txt = (parent?.innerText || '').toLowerCase();
-                        if (txt.includes('i agree') || txt.includes('terms of service') || txt.includes('cloud platform')) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width === 0 || rect.height === 0) continue;
-                            return {
-                                x: Math.round(rect.x + rect.width / 2),
-                                y: Math.round(rect.y + rect.height / 2),
-                                checked: el.checked || el.getAttribute('aria-checked') === 'true',
-                            };
+                        const t = (el.innerText || '').toLowerCase();
+                        if (t.includes('terms of service') && (t.includes('agree') || t.includes('i agree'))) {
+                            return true;
                         }
                     }
+                    return false;
                 }
-                return null;
-            }
-        """)
+            """)
+        except Exception as e:
+            log.warning(f"⚠️ page crash: {e}")
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+            return
+
+        if not has_dialog:
+            log.info("ℹ️ ما كاينش Dialog")
+            return
+
+        log.info("📋 لقينا Dialog")
+
+        # checkbox
+        try:
+            checkbox_info = await page.evaluate("""
+                () => {
+                    const containers = [
+                        ...document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, md-dialog'),
+                        document.body
+                    ];
+                    for (const container of containers) {
+                        for (const el of container.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox')) {
+                            if (el.offsetParent === null) continue;
+                            const parent = el.closest('label, div, mat-checkbox') || el.parentElement;
+                            const txt = (parent?.innerText || '').toLowerCase();
+                            if (txt.includes('i agree') || txt.includes('terms of service') || txt.includes('cloud platform')) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width === 0 || rect.height === 0) continue;
+                                return {
+                                    x: Math.round(rect.x + rect.width / 2),
+                                    y: Math.round(rect.y + rect.height / 2),
+                                    checked: el.checked || el.getAttribute('aria-checked') === 'true',
+                                };
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+        except Exception as e:
+            log.warning(f"⚠️ checkbox evaluate: {e}")
+            checkbox_info = None
 
         if checkbox_info and not checkbox_info['checked']:
             log.info(f"📋 checkbox @({checkbox_info['x']},{checkbox_info['y']})")
@@ -235,7 +232,7 @@ class CloudRunDeployer:
                 await page.mouse.down()
                 await page.wait_for_timeout(120)
                 await page.mouse.up()
-                log.info("✅ mouse click على checkbox")
+                log.info("✅ checkbox mouse")
                 await page.wait_for_timeout(2000)
 
                 checked_now = await page.evaluate("""
@@ -251,78 +248,84 @@ class CloudRunDeployer:
                         return false;
                     }
                 """)
-
                 if not checked_now:
                     for sel in ['mat-checkbox', '[role="dialog"] input[type="checkbox"]', '[role="dialog"] [role="checkbox"]']:
                         try:
                             el = page.locator(sel).first
                             if await el.count() > 0 and await el.is_visible():
                                 await el.click(force=True, timeout=3000)
-                                log.info(f"✅ Playwright checkbox: {sel}")
+                                log.info(f"✅ Playwright checkbox")
                                 break
                         except Exception:
                             continue
                     await page.wait_for_timeout(1500)
             except Exception as e:
-                log.warning(f"❌ checkbox فشل: {e}")
+                log.warning(f"❌ checkbox: {e}")
 
-        await self._shot("✅ تم تفعيل checkbox")
         await page.wait_for_timeout(1500)
 
-        agree_target = await page.evaluate("""
-            () => {
-                const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
-                for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
-                    if (el.offsetParent === null) continue;
-                    const t = (el.innerText || el.value || '').trim().toLowerCase();
-                    for (const kw of kws) {
-                        if (t === kw || t.includes(kw)) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width === 0 || rect.height === 0) continue;
-                            const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-                            return {
-                                text: (el.innerText || el.value || '').trim(),
-                                x: Math.round(rect.x + rect.width / 2),
-                                y: Math.round(rect.y + rect.height / 2),
-                                disabled: disabled,
-                            };
+        # Agree button
+        try:
+            agree_target = await page.evaluate("""
+                () => {
+                    const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
+                    for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
+                        if (el.offsetParent === null) continue;
+                        const t = (el.innerText || el.value || '').trim().toLowerCase();
+                        for (const kw of kws) {
+                            if (t === kw || t.includes(kw)) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width === 0 || rect.height === 0) continue;
+                                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                                return {
+                                    text: (el.innerText || el.value || '').trim(),
+                                    x: Math.round(rect.x + rect.width / 2),
+                                    y: Math.round(rect.y + rect.height / 2),
+                                    disabled: disabled,
+                                };
+                            }
                         }
                     }
+                    return null;
                 }
-                return null;
-            }
-        """)
-
-        if not agree_target:
-            log.warning("⚠️ ما لقيناش زر Agree")
+            """)
+        except Exception as e:
+            log.warning(f"⚠️ agree evaluate: {e}")
             return
 
-        log.info(f"🎯 زر Agree: '{agree_target['text']}' @({agree_target['x']},{agree_target['y']}) dis={agree_target['disabled']}")
+        if not agree_target:
+            log.warning("⚠️ ما لقيناش Agree")
+            return
+
+        log.info(f"🎯 Agree: '{agree_target['text']}' dis={agree_target['disabled']}")
 
         if agree_target['disabled']:
             for _ in range(5):
                 await page.wait_for_timeout(1500)
-                agree_target = await page.evaluate("""
-                    () => {
-                        const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
-                        for (const el of document.querySelectorAll('button, [role="button"]')) {
-                            if (el.offsetParent === null) continue;
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            for (const kw of kws) {
-                                if (t === kw || t.includes(kw)) {
-                                    const rect = el.getBoundingClientRect();
-                                    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-                                    return {
-                                        x: Math.round(rect.x + rect.width / 2),
-                                        y: Math.round(rect.y + rect.height / 2),
-                                        disabled: disabled,
-                                    };
+                try:
+                    agree_target = await page.evaluate("""
+                        () => {
+                            const kws = ['agree and continue', 'i agree', 'accept', 'agree'];
+                            for (const el of document.querySelectorAll('button, [role="button"]')) {
+                                if (el.offsetParent === null) continue;
+                                const t = (el.innerText || '').trim().toLowerCase();
+                                for (const kw of kws) {
+                                    if (t === kw || t.includes(kw)) {
+                                        const rect = el.getBoundingClientRect();
+                                        const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                                        return {
+                                            x: Math.round(rect.x + rect.width / 2),
+                                            y: Math.round(rect.y + rect.height / 2),
+                                            disabled: disabled,
+                                        };
+                                    }
                                 }
                             }
+                            return null;
                         }
-                        return null;
-                    }
-                """)
+                    """)
+                except Exception:
+                    break
                 if agree_target and not agree_target.get('disabled'):
                     break
 
@@ -365,9 +368,9 @@ class CloudRunDeployer:
             await page.mouse.down()
             await page.wait_for_timeout(120)
             await page.mouse.up()
-            log.info("✅ mouse click على زر Agree")
+            log.info("✅ Agree mouse")
         except Exception as e:
-            log.warning(f"❌ mouse click فشل: {e}")
+            log.warning(f"❌ Agree mouse: {e}")
             for sel in [
                 'button:has-text("Agree and continue")',
                 'button:has-text("I agree")',
@@ -377,29 +380,28 @@ class CloudRunDeployer:
                     el = page.locator(sel).first
                     if await el.count() > 0 and await el.is_visible():
                         await el.click(force=True, timeout=5000)
-                        log.info(f"✅ fallback: {sel}")
                         break
                 except Exception:
                     continue
 
         for i in range(15):
             await page.wait_for_timeout(2000)
-            gone = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal')) {
-                        if (el.offsetParent === null) continue;
-                        const t = (el.innerText || '').toLowerCase();
-                        if (t.includes('terms of service') && t.includes('agree')) return false;
+            try:
+                gone = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal')) {
+                            if (el.offsetParent === null) continue;
+                            const t = (el.innerText || '').toLowerCase();
+                            if (t.includes('terms of service') && t.includes('agree')) return false;
+                        }
+                        return true;
                     }
-                    return true;
-                }
-            """)
-            if gone:
-                log.info(f"✅ Terms Dialog اختفت بعد ~{(i+1)*2}s")
-                await self._shot("✅ تم قبول Terms Dialog")
-                break
-            log.info(f"⏳ مازال Terms Dialog... ({(i+1)*2}s)")
-
+                """)
+                if gone:
+                    log.info(f"✅ Dialog اختفت ~{(i+1)*2}s")
+                    break
+            except Exception:
+                log.info(f"⏳ {i+1}")
         log.info("✅ step2 انتهى")
 
     # ==================== STEP 3: Enable API ====================
@@ -407,10 +409,8 @@ class CloudRunDeployer:
     async def step3_enable_api(self, project_id: str, authuser: str):
         page = self.page
         api_url = f"https://console.cloud.google.com/apis/library/run.googleapis.com?project={project_id}&authuser={authuser}"
-        log.info(f"🌐 Enable API: {api_url[:100]}")
+        log.info(f"🌐 Enable API...")
         await page.goto(api_url, wait_until="domcontentloaded")
-
-        await self._shot("☁️ صفحة تفعيل Cloud Run API")
 
         enable_btn = page.get_by_role("button", name="Enable")
         manage_btn = page.get_by_role("button", name="Manage")
@@ -421,31 +421,29 @@ class CloudRunDeployer:
             if await enable_btn.is_visible():
                 await enable_btn.click()
                 await expect(manage_btn.or_(disable_btn)).to_be_visible(timeout=60000)
-                await self._shot("✅ Cloud Run API مفعّل")
+                log.info("✅ API مفعّل")
             elif await manage_btn.is_visible():
-                log.info("ℹ️ API مفعّل من قبل")
+                log.info("ℹ️ API مفعّل مسبقا")
         except Exception as e:
-            raise RuntimeError(f"عطل في إيجاد زر تفعيل الـ API: {str(e)}")
+            raise RuntimeError(f"فشل تفعيل API: {str(e)}")
 
     # ==================== STEP 4: Create Cloud Run ====================
 
     async def step4_create_cloud_run(self, project_id: str, authuser: str):
         page = self.page
         run_url = f"https://console.cloud.google.com/run/create?project={project_id}&authuser={authuser}"
-        log.info(f"🌐 Create Cloud Run: {run_url[:100]}")
+        log.info(f"🌐 Create Cloud Run...")
         await page.goto(run_url, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
-
-        await self._shot("🚀 صفحة إنشاء Cloud Run")
 
         try:
             label = page.get_by_text("Container Image URL").first
             await label.click()
             await page.wait_for_timeout(500)
             await page.keyboard.type("docker.io/ajndjd2/ahmed-vip1", delay=50)
-            await self._shot("📦 تم إدخال رابط الحاوية")
+            log.info("✅ رابط الحاوية")
         except Exception as e:
-            raise RuntimeError(f"فشل في الضغط وكتابة الرابط: {str(e)}")
+            raise RuntimeError(f"فشل كتابة الرابط: {str(e)}")
 
         await page.wait_for_timeout(3000)
 
@@ -459,13 +457,11 @@ class CloudRunDeployer:
             await page.keyboard.press("End")
             await page.wait_for_timeout(1000)
 
-            await self._shot("⚙️ الإعدادات جاهزة")
-
             create_btn = page.get_by_role("button", name="Create")
             await create_btn.click(force=True)
-            await self._shot("▶️ تم الضغط على Create")
+            log.info("✅ Create")
         except Exception as e:
-            raise RuntimeError(f"فشل في اختيار الإعدادات أو ضغط Create: {str(e)}")
+            raise RuntimeError(f"فشل الإعدادات: {str(e)}")
 
     # ==================== STEP 5: Get URL ====================
 
@@ -473,17 +469,6 @@ class CloudRunDeployer:
         page = self.page
         link_locator = page.locator('a[href*="run.app"]')
         await link_locator.wait_for(state="visible", timeout=120000)
-        await self._shot("🎯 خدمة Cloud Run جاهزة")
         final_url = await link_locator.get_attribute("href")
-        return final_url
-
-    async def run_all(self, project_id: str, authuser: str) -> str:
-        log.info("🚀 بدء عملية النشر كاملة")
-        await self.step1_welcome_screen()
-        await self.page.wait_for_timeout(3000)
-        await self.step2_terms_dialog()
-        await self.step3_enable_api(project_id, authuser)
-        await self.step4_create_cloud_run(project_id, authuser)
-        final_url = await self.step5_get_deployed_url()
-        log.info(f"✅ URL النهائي: {final_url}")
+        log.info(f"✅ URL: {final_url}")
         return final_url
