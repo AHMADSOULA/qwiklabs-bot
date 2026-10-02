@@ -1,5 +1,5 @@
 import asyncio
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
@@ -16,7 +16,7 @@ job_lock = asyncio.Lock()
 
 
 # ═══════════════════════════════════════════
-# قوالب VLESS و JSON و Dark
+# قوالب
 # ═══════════════════════════════════════════
 
 VLESS_TEMPLATE = (
@@ -93,6 +93,7 @@ DARKTUNNEL_BASE_URI = "darktunnel://eyJ0eXBlIjoiVkxFU1MiLCJuYW1lIjoi2YXYrNin2YbZ
 def _b64_pad(s: str) -> str:
     return s + ("=" * ((4 - (len(s) % 4)) % 4)) if s else s
 
+
 def build_darktunnel_uri_with_host(new_host: str) -> str:
     import base64, json as _json
     b64 = _b64_pad(DARKTUNNEL_BASE_URI.split("darktunnel://", 1)[1].strip())
@@ -134,7 +135,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = []
     for jid, status, created in jobs:
-        emoji = {"pending": "⏳", "done": "✅", "failed": "❌", "waiting_password": "🔑"}.get(status, "❔")
+        emoji = {"pending": "⏳", "done": "✅", "failed": "❌", "running": "🔄"}.get(status, "❔")
         lines.append(f"• `#{jid}` — {emoji} {status} — {created}")
     await update.message.reply_text(
         f"📊 *آخر {len(jobs)} مهام:*\n\n" + "\n".join(lines),
@@ -187,25 +188,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# المهمة الرئيسية
+# المهمة الرئيسية — بلا تصوير
 # ═══════════════════════════════════════════
 
 async def run_job(job_id, sso_url, msg, user_id, context):
     async with job_lock:
         browser = StealthBrowser()
         try:
-            await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 إطلاق المتصفح...", parse_mode=ParseMode.MARKDOWN)
             ctx = await browser.start()
 
-            await msg.edit_text(
-                f"🚀 *#{job_id}*\n\n🔹 بدء العملية...",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await msg.edit_text(f"🚀 *#{job_id}*\n\n🔹 بدء العملية...", parse_mode=ParseMode.MARKDOWN)
 
-            result = await run_sso_flow(ctx, sso_url, sender=msg, chat_id=user_id)
+            result = await run_sso_flow(ctx, sso_url)
 
             domain = result["domain"]
             final_url = result["final_url"]
@@ -213,7 +208,7 @@ async def run_job(job_id, sso_url, msg, user_id, context):
             await db.update_job(job_id, "done", final_url)
             await db.clear_session(user_id)
 
-            # ─── النتيجة النهائية ───
+            # ✅ النتيجة
             await msg.reply_text(
                 f"✅ **𝙃𝙚𝙧𝙚 𝙮𝙤𝙪 𝙜𝙤 𝙗𝙧𝙤**\n\n"
                 f"🌐 **Domain:**\n`{domain}`\n\n"
@@ -238,7 +233,8 @@ async def run_job(job_id, sso_url, msg, user_id, context):
             # Dark file
             new_uri = build_darktunnel_uri_with_host(domain)
             safe_domain = "".join(c for c in domain.lower() if c.isalnum() or c in ".-_")[:40]
-            bio = __import__("io").BytesIO(new_uri.encode("utf-8"))
+            import io as _io
+            bio = _io.BytesIO(new_uri.encode("utf-8"))
             bio.name = f"زين و اسيا مجاني - {safe_domain}.dark"
             await msg.reply_document(
                 document=bio,
