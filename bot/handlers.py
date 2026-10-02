@@ -188,7 +188,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# المهمة الرئيسية — بلا تصوير
+# المهمة
 # ═══════════════════════════════════════════
 
 async def run_job(job_id, sso_url, msg, user_id, context):
@@ -208,7 +208,6 @@ async def run_job(job_id, sso_url, msg, user_id, context):
             await db.update_job(job_id, "done", final_url)
             await db.clear_session(user_id)
 
-            # ✅ النتيجة
             await msg.reply_text(
                 f"✅ **𝙃𝙚𝙧𝙚 𝙮𝙤𝙪 𝙜𝙤 𝙗𝙧𝙤**\n\n"
                 f"🌐 **Domain:**\n`{domain}`\n\n"
@@ -216,21 +215,18 @@ async def run_job(job_id, sso_url, msg, user_id, context):
                 parse_mode=ParseMode.MARKDOWN,
             )
 
-            # VLESS
             vless_result = VLESS_TEMPLATE.format(domain=domain)
             await msg.reply_text(
                 f"🔗 <b>VLESS:</b>\n<pre><code class=\"language-java\">{vless_result}</code></pre>",
                 parse_mode='html'
             )
 
-            # JSON
             json_result = JSON_TEMPLATE.replace("__DOMAIN__", domain)
             await msg.reply_text(
                 f"📄 <b>JSON:</b>\n<pre><code class=\"language-json\">{json_result}</code></pre>",
                 parse_mode='html'
             )
 
-            # Dark file
             new_uri = build_darktunnel_uri_with_host(domain)
             safe_domain = "".join(c for c in domain.lower() if c.isalnum() or c in ".-_")[:40]
             import io as _io
