@@ -1,14 +1,26 @@
 """
 automation/sso_flow.py
-تنسيق العملية الكاملة — بلا تصوير
+تنسيق العملية الكاملة — بطريقة GC.py
 """
 import re
 from urllib.parse import urlparse, parse_qs
 
-from automation.deployer import CloudRunDeployer, extract_project_id, extract_domain_from_service_url
+from automation.cloud_console import CloudConsole
 from utils.logger import get_logger
 
 log = get_logger("SSOFlow")
+
+
+def extract_project_id(url: str) -> str:
+    m = re.search(r'(qwiklabs-gcp-[\w-]+)', url or "")
+    return m.group(1) if m else None
+
+
+def extract_domain_from_service_url(service_url: str) -> str:
+    s = (service_url or "").strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        return urlparse(s).netloc.strip()
+    return s.replace("http://", "").replace("https://", "").split("/")[0].strip()
 
 
 def extract_authuser(page_url: str) -> str:
@@ -20,7 +32,7 @@ def extract_authuser(page_url: str) -> str:
 
 
 async def run_sso_flow(context, sso_url: str) -> dict:
-    """ينفذ العملية كاملة ويرجع dict فيه final_url + domain"""
+    """ينفذ العملية كاملة"""
     project_id = extract_project_id(sso_url)
     if not project_id:
         raise RuntimeError("❌ Project ID ماكانش في الرابط.")
@@ -32,16 +44,16 @@ async def run_sso_flow(context, sso_url: str) -> dict:
     try:
         await page.goto(sso_url, wait_until="domcontentloaded", timeout=60000)
 
-        deployer = CloudRunDeployer(page)
+        console = CloudConsole(context)
 
-        # STEP 1
-        await deployer.step1_welcome_screen()
+        # STEP 1: TOS الأولى
+        await console.step1_welcome_screen(page)
 
-        # STEP 2
+        # STEP 2: Terms Dialog
         await page.wait_for_timeout(3000)
-        await deployer.step2_terms_dialog()
+        await console.step2_terms_dialog(page)
 
-        # Dashboard
+        # نستناو Dashboard
         try:
             await page.wait_for_url("**/home/dashboard**", timeout=45000)
         except Exception:
@@ -51,13 +63,13 @@ async def run_sso_flow(context, sso_url: str) -> dict:
         log.info(f"🔑 authuser = {authuser}")
 
         # STEP 3
-        await deployer.step3_enable_api(project_id, authuser)
+        await console.step3_enable_api(page, project_id, authuser)
 
         # STEP 4
-        await deployer.step4_create_cloud_run(project_id, authuser)
+        await console.step4_create_cloud_run(page, project_id, authuser)
 
         # STEP 5
-        final_url = await deployer.step5_get_deployed_url()
+        final_url = await console.step5_get_deployed_url(page)
         domain = extract_domain_from_service_url(final_url)
 
         return {
